@@ -11,11 +11,26 @@ class PipelineComponent:
         downstream: "PipelineComponent | None" = None
     ):
         """
-        A voice agent is composed as a pipeline,
-        queue: each components owns a async queue, frames are pushed by upstream component into this queue.
-        downstream: the next component, component push frames to next component and events to the controller.
-        stopped: bool, whether the componets
+        入口:PipelineComponent.run()。以一个异步任务运行,不断从自己的队列取帧交给 handle,
+            直到读到 StopFrame 为止。
+
+        处理:handle(frame) 由具体组件实现,处理上游传入的帧,通过 push 向下游产出 0 到多个帧。
+            handle 抛出的异常由 on_error 处理(默认记日志并继续),不会结束循环。
+
+        控制事件:系统、控制类的抢占型事件(停止、打断等)不走 pipe。产生它的组件调用
+            controller.receive(frame),controller 广播给订阅了该类型的组件
+            (订阅由 control_frames 决定)。
+
+        停止:收到 StopFrame 后,基类会取消正在处理的帧、丢弃积压、执行 cleanup,
+            并把 StopFrame 转发给下游。子类只需实现 cleanup。
+
+        打断:InterruptFrame 将取消当前帧并丢弃积压,但组件继续运行,不转发给下游
+            (下游各自订阅广播)。尚未实现。
+
+        注意:取消只在 await 处生效。线程里的阻塞推理需要插件自己检查中止标志。
+        
         """
+        
         
         self.logger = logger.bind(component=self.__class__.__name__)
         # the input queue of the pipeline, frames are flow into this queue
