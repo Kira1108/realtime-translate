@@ -6,7 +6,6 @@ from app.logging_config import setup_logging
 
 setup_logging()
 
-from app.routers import vad_worker
 from app.routers import test
 from app.routers import voice_changer
 from app.routers import translator
@@ -32,7 +31,6 @@ app.add_middleware(
 )
 
 
-app.include_router(vad_worker.router)
 app.include_router(test.router)
 app.include_router(voice_changer.router)
 app.include_router(translator.router)
