@@ -1,0 +1,1 @@
+cp -RL /Users/wanghuan/.cache/huggingface/hub/models--mlx-community--Qwen3-ASR-0.6B-8bit/snapshots/89e96d92ba34aca20b3e29fb10cc284097d1219f/. /Users/wanghuan/Projects/realtime-translate/models/stt/qwen3-stt/

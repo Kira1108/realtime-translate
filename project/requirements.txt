@@ -1,0 +1,29 @@
+# Python >= 3.10. Versions are the ones the project was developed and tested with.
+
+# Web server
+fastapi==0.143.0
+uvicorn[standard]==0.38.0
+websockets==15.0.1
+pydantic==2.13.4
+python-dotenv==1.1.1
+
+# LLM (OpenRouter)
+pydantic-ai==2.54.0
+
+# Speech models: STT / TTS run locally with MLX, which needs Apple Silicon macOS
+mlx==0.31.2
+mlx-audio==0.5.8
+
+# VAD
+onnxruntime==1.21.1
+pyloudnorm==0.2.0
+
+# Audio / numerics
+numpy==2.0.2
+soundfile==0.12.1
+
+# Logging
+loguru==0.7.3
+
+# Only for scripts/voice_changer_mic.py (needs PortAudio: brew install portaudio)
+PyAudio==0.2.14

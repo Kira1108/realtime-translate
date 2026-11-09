@@ -1,0 +1,1 @@
+cp -RL /Users/wanghuan/.cache/huggingface/hub/models--mlx-community--Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit/snapshots/049ef77fe8816b536193c0c25f9a214d17921282/. /Users/wanghuan/Projects/realtime-translate/models/tts/qwen3-tts/

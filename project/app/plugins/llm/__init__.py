@@ -1,0 +1,1 @@
+from .openrouter import create_pydantic_ai_model
