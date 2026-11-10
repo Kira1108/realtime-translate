@@ -6,6 +6,7 @@ from app.frame import AudioFrame, TextFrame
 from app.pipeline.component import PipelineComponent
 
 from .qwen3_tts import Qwen3TTS
+from .vol_tts import VolTTS
 
 
 class Qwen3TTSComponent(PipelineComponent):
@@ -44,3 +45,10 @@ class Qwen3TTSComponent(PipelineComponent):
 
     async def cleanup(self):
         await self.tts.aclose()
+
+
+class VolTTSComponent(Qwen3TTSComponent):
+    """Same behaviour as Qwen3TTSComponent, backed by the Volcengine VolTTS service."""
+
+    def __init__(self, tts: VolTTS | None = None, controller=None, downstream=None):
+        super().__init__(tts or VolTTS(), controller, downstream)

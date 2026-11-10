@@ -32,26 +32,27 @@ class Config:
     def silero_vad_model_path(self):
         return self.vad_model_dir / "silero_vad.onnx"
     
-    @property
-    def openrouter_api_key(self):
-        openrouter_api_key = os.getenv("OPENROUTER_API_KEY",None)
-        
-        if openrouter_api_key:
-            return openrouter_api_key
+    @staticmethod
+    def _get_env(name):
+        value = os.getenv(name, None)
+        if value:
+            return value
 
         from dotenv import load_dotenv
         p = (Path.home() / ".env").resolve()
         if not p.exists():
             return None
-        
+
         load_dotenv(dotenv_path=p)
-        
-        openrouter_api_key = os.getenv("OPENROUTER_API_KEY",None)
-        
-        if openrouter_api_key:
-            return openrouter_api_key
-        
-        return None
+        return os.getenv(name, None) or None
+
+    @property
+    def openrouter_api_key(self):
+        return self._get_env("OPENROUTER_API_KEY")
+
+    @property
+    def volc_tts_api_key(self):
+        return self._get_env("VOLC_TTS_API_KEY")
 
 
 @lru_cache(maxsize=None)

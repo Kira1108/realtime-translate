@@ -6,6 +6,8 @@ from app.plugins.llm.translator import TranslatorComponent
 from app.plugins.stt.component import Qwen3STTComponent
 from app.plugins.tts.component import Qwen3TTSComponent
 from app.plugins.tts.qwen3_tts import Qwen3TTS
+from app.plugins.tts.vol_tts import VolTTS
+from app.plugins.tts.component import VolTTSComponent
 from app.transport.ws import WebsocketTransport
 
 router = APIRouter(
@@ -25,7 +27,8 @@ async def translator_endpoint(websocket: WebSocket):
             VADAccumulator(),
             Qwen3STTComponent(),
             TranslatorComponent(),
-            Qwen3TTSComponent(Qwen3TTS(language="English")),
+            # Qwen3TTSComponent(Qwen3TTS(language="English")),
+            VolTTSComponent(VolTTS()),
         ],
     )
     try:

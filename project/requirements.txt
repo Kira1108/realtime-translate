@@ -7,6 +7,9 @@ websockets==15.0.1
 pydantic==2.13.4
 python-dotenv==1.1.1
 
+# Volcengine TTS (HTTP streaming)
+httpx==0.28.1
+
 # LLM (OpenRouter)
 pydantic-ai==2.54.0
 
