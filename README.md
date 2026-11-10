@@ -152,3 +152,17 @@ project/app/
   control/      会话级控制总线(停止、打断等事件)
   routers/      WebSocket 接口
 ```
+
+## 待办列表
+
+1. 部署千问-3-tts，需要tts克隆音。（1台服务器，4个并发， 4090） -- 优先搞一下。 tts的ttfa，300ms
+2. 部署千问3-asr模型。 （1台服务器，30个并发， 4090）
+3. 可以加一些音频处理模块。 （不需要资源）
+4. 不需要考虑回声消除。（webrtc） - 软件回声消除（效果差）
+
+vad - silence 240ms。
+asr - end chunk - 250ms
+llm - 首个切片 500ms，自研模型 - 200ms
+tts - 首个切片 300ms
+transport - 100 ms
+1.5 s左右，用户听到。
