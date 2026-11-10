@@ -10,6 +10,7 @@ from app.plugins.tts.vol_tts import VolTTS
 from app.plugins.tts.component import VolTTSComponent
 from app.transport.ws import WebsocketTransport
 from app.plugins.llm.naive_agent import NaiveAgentComponent
+from app.plugins.turn import DropWhileBotBusyAggregator
 
 router = APIRouter(
     prefix = "/websocket",
@@ -27,6 +28,7 @@ async def chatbot_endpoint(websocket: WebSocket):
         [
             VADAccumulator(),
             Qwen3STTComponent(),
+            DropWhileBotBusyAggregator(),
             NaiveAgentComponent(),
             VolTTSComponent(VolTTS()),
         ],

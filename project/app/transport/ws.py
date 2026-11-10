@@ -5,7 +5,14 @@ import time
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.control import SessionController
-from app.frame import AudioFrame, EventFrame, ReplyEndFrame, StopFrame
+from app.frame import (
+    AudioFrame,
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    EventFrame,
+    ReplyEndFrame,
+    StopFrame,
+)
 from app.pipeline.component import PipelineComponent
 
 
@@ -93,14 +100,44 @@ class TransportInput(PipelineComponent):
 
 
 class TransportOutput(PipelineComponent):
-    """Pipeline sink: sends AudioFrame / events to the websocket client."""
+    """Pipeline sink: sends AudioFrame / events to the websocket client.
+
+    Also tracks when the client should finish playing what was sent, and broadcasts
+    BotStartedSpeakingFrame / BotStoppedSpeakingFrame through the controller, so
+    upstream components (e.g. the user utterance aggregator) know whether the bot is talking.
+    """
 
     def __init__(self,
             websocket: WebSocket,
-            controller: SessionController | None = None
+            controller: SessionController | None = None,
+            playback_margin_secs: float = 0.3,
         ):
         super().__init__(controller)
         self.websocket = websocket
+        # extra wait for network delay and the client's playback buffer
+        self.playback_margin_secs = playback_margin_secs
+        # wall-clock time at which the client is expected to finish playing everything sent so far
+        self._playback_end = 0.0
+        self._stopped_speaking_task: asyncio.Task | None = None
+
+    def _notify(self, frame: EventFrame):
+        if self.controller:
+            self.controller.receive(frame)
+
+    def _track_playback(self, frame: AudioFrame):
+        if not frame.sample_rate:
+            return
+        secs = len(frame.audio_data) / 2 / frame.sample_rate
+        self._playback_end = max(self._playback_end, time.time()) + secs
+
+    def _schedule_stopped_speaking(self, utterance_id: int | None):
+        delay = max(0.0, self._playback_end - time.time()) + self.playback_margin_secs
+
+        async def emit():
+            await asyncio.sleep(delay)
+            self._notify(BotStoppedSpeakingFrame(utterance_id=utterance_id))
+
+        self._stopped_speaking_task = asyncio.create_task(emit())
 
     async def output_audio(self, frame: AudioFrame):
         tag = f"[#{frame.utterance_id}]"
@@ -108,13 +145,17 @@ class TransportOutput(PipelineComponent):
 
         if frame.audio_data:
             await self.websocket.send_bytes(frame.audio_data)
-            if frame.is_first and latency is not None:
-                self.logger.info(
-                    f"{tag} first audio sent ({len(frame.audio_data) / 1024:.0f} KB), "
-                    f"{latency:.2f}s after speech ended"
-                )
+            self._track_playback(frame)
+            if frame.is_first:
+                self._notify(BotStartedSpeakingFrame(utterance_id=frame.utterance_id))
+                if latency is not None:
+                    self.logger.info(
+                        f"{tag} first audio sent ({len(frame.audio_data) / 1024:.0f} KB), "
+                        f"{latency:.2f}s after speech ended"
+                    )
 
         if frame.is_end:
+            self._schedule_stopped_speaking(frame.utterance_id)
             await self.output_event(ReplyEndFrame(utterance_id=frame.utterance_id))
             if latency is not None:
                 self.logger.info(f"{tag} reply finished, {latency:.2f}s after speech ended")
@@ -139,6 +180,8 @@ class TransportOutput(PipelineComponent):
             self.controller.receive(StopFrame())
 
     async def shutdown(self, frame):
+        if self._stopped_speaking_task is not None:
+            self._stopped_speaking_task.cancel()
         if not self._stopped:
             try:
                 await self.output_event(frame)  # tell the client we are done

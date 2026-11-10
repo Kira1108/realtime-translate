@@ -9,6 +9,7 @@ class Frame(BaseModel):
 
 class AudioFrame(Frame):
     audio_data: bytes
+    sample_rate: int | None = None  # set by producers whose rate is not implied by the pipeline stage
     is_first:bool = False
     is_end:bool = False
 

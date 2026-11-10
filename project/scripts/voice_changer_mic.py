@@ -85,6 +85,15 @@ async def play_replies(ws, pa, device: int, save_path: str | None):
         format=pyaudio.paInt16, channels=1, rate=REPLY_RATE, output=True,
         output_device_index=device,
     )
+    # the server streams faster than real time: keep reading the socket and buffer the audio here,
+    # otherwise the websocket backs up and the keepalive ping times out
+    playback: asyncio.Queue[bytes | None] = asyncio.Queue()
+
+    async def play():
+        while (chunk := await playback.get()) is not None:
+            await asyncio.to_thread(stream.write, chunk)
+
+    player = asyncio.create_task(play())
     received = []
     try:
         async for msg in ws:
@@ -92,18 +101,23 @@ async def play_replies(ws, pa, device: int, save_path: str | None):
                 peak = np.abs(np.frombuffer(msg, dtype=np.int16)).max() / 32768
                 print(f"reply audio: {len(msg) / 2 / REPLY_RATE:.2f}s, peak level {peak:.2f}")
                 received.append(msg)
-                await asyncio.to_thread(stream.write, msg)
+                playback.put_nowait(msg)
             else:
                 print("event:", msg)
     except websockets.ConnectionClosed:
         pass
     finally:
-        stream.stop_stream()
-        stream.close()
-        if save_path and received:
-            audio = np.frombuffer(b"".join(received), dtype=np.int16)
-            sf.write(save_path, audio, REPLY_RATE, subtype="PCM_16")
-            print(f"saved replies to {save_path}")
+        playback.put_nowait(None)  # let what is buffered finish playing
+        try:
+            await player
+        finally:
+            player.cancel()
+            stream.stop_stream()
+            stream.close()
+            if save_path and received:
+                audio = np.frombuffer(b"".join(received), dtype=np.int16)
+                sf.write(save_path, audio, REPLY_RATE, subtype="PCM_16")
+                print(f"saved replies to {save_path}")
 
 
 async def main(args):

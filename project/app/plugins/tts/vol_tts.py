@@ -26,7 +26,7 @@ class VolTTS:
     def __init__(
         self,
         api_key: str = None,
-        speaker: str = "zh_male_M392_conversation_wvae_bigtts",
+        speaker: str = "zh_female_tianmeitaozi_mars_bigtts",#"zh_male_M392_conversation_wvae_bigtts",
         resource_id: str = "seed-tts-1.0",
         sample_rate: int = 24000,
         uid: str = "realtime-translate",

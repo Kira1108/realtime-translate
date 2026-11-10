@@ -61,6 +61,7 @@ class Qwen3TTSComponent(PipelineComponent):
             samples += len(chunk)
             self.push(AudioFrame(
                 audio_data=self._to_pcm16(chunk),
+                sample_rate=self.tts.sample_rate,
                 utterance_id=frame.utterance_id,
                 origin_ts=frame.origin_ts,
                 is_first=first_pending,

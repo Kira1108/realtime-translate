@@ -25,3 +25,15 @@ class ReplyEndFrame(EventFrame):
     utterance_id: Optional[int] = Field(default=None, description="utterance this reply answers")
 
 
+class BotStartedSpeakingFrame(EventFrame):
+    """Broadcast by the transport when the first audio chunk of a reply is sent."""
+    event_type: Literal["bot_started_speaking"] = Field(default="bot_started_speaking", description = "type of the event frame")
+    utterance_id: Optional[int] = Field(default=None, description="utterance this reply answers")
+
+
+class BotStoppedSpeakingFrame(EventFrame):
+    """Broadcast by the transport once the client is expected to have finished playing a reply."""
+    event_type: Literal["bot_stopped_speaking"] = Field(default="bot_stopped_speaking", description = "type of the event frame")
+    utterance_id: Optional[int] = Field(default=None, description="utterance this reply answers")
+
+
