@@ -5,7 +5,7 @@ import time
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.control import SessionController
-from app.frame import AudioFrame, EventFrame, StopFrame
+from app.frame import AudioFrame, EventFrame, ReplyEndFrame, StopFrame
 from app.pipeline.component import PipelineComponent
 
 
@@ -103,13 +103,21 @@ class TransportOutput(PipelineComponent):
         self.websocket = websocket
 
     async def output_audio(self, frame: AudioFrame):
-        await self.websocket.send_bytes(frame.audio_data)
-        if frame.origin_ts is not None:
-            latency = time.time() - frame.origin_ts
-            self.logger.info(
-                f"[#{frame.utterance_id}] reply sent ({len(frame.audio_data) / 1024:.0f} KB), "
-                f"{latency:.2f}s after speech ended"
-            )
+        tag = f"[#{frame.utterance_id}]"
+        latency = time.time() - frame.origin_ts if frame.origin_ts is not None else None
+
+        if frame.audio_data:
+            await self.websocket.send_bytes(frame.audio_data)
+            if frame.is_first and latency is not None:
+                self.logger.info(
+                    f"{tag} first audio sent ({len(frame.audio_data) / 1024:.0f} KB), "
+                    f"{latency:.2f}s after speech ended"
+                )
+
+        if frame.is_end:
+            await self.output_event(ReplyEndFrame(utterance_id=frame.utterance_id))
+            if latency is not None:
+                self.logger.info(f"{tag} reply finished, {latency:.2f}s after speech ended")
 
     async def output_event(self, event: dict | EventFrame):
         if isinstance(event, EventFrame):

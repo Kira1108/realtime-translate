@@ -19,3 +19,9 @@ class StopFrame(EventFrame):
     event_type: Literal["stop"] = Field(default="stop", description = "type of the event frame")
 
 
+class ReplyEndFrame(EventFrame):
+    """Sent to the client after the last audio chunk of a reply."""
+    event_type: Literal["reply_end"] = Field(default="reply_end", description = "type of the event frame")
+    utterance_id: Optional[int] = Field(default=None, description="utterance this reply answers")
+
+

@@ -2,7 +2,7 @@ import time
 from typing import AsyncGenerator
 from pydantic_ai import Agent
 
-from app.frame import TextFrame
+from app.frame import TextFrame, TextStreamFrame
 from app.pipeline.component import PipelineComponent
 
 from .openrouter import create_pydantic_ai_model
@@ -46,11 +46,26 @@ class NaiveAgentComponent(PipelineComponent):
         super().__init__(controller, downstream)
         self.runner = runner or NaiveAgentRunner()
 
-    def _push_text(self, text: str, frame, tag: str, started: float):
-        self.logger.info(f"{tag} LLM +{time.perf_counter() - started:.2f}s: {text!r}")
-        self.push(TextFrame(text=text, utterance_id=frame.utterance_id, origin_ts=frame.origin_ts))
+    def _push_text(self, 
+            text: str, 
+            frame, tag: str, 
+            started: float, 
+            is_first: bool = False, 
+            is_end: bool = False
+        ):
+        if is_first:
+            self.logger.info(f"{tag} LLM +{time.perf_counter() - started:.2f}s: {text!r}")
+        
+        self.push(TextStreamFrame(
+            text=text, 
+            utterance_id=frame.utterance_id, 
+            origin_ts=frame.origin_ts,
+            is_first=is_first,
+            is_end=is_end
+        ))
 
     async def handle(self, frame):
+        
         if not isinstance(frame, TextFrame) or not frame.text.strip():
             return
 
@@ -63,17 +78,25 @@ class NaiveAgentComponent(PipelineComponent):
         # 句首空格和 strip():现在不处理没关系,但如果以后要在 TTS 前做文本匹配或者统计字数,这个空格会让人困惑。
         # 一次推送包含多句:这个会影响首句延迟,但要等你实际用麦克风体验过,觉得回复开始得慢,再回来调。现在的日志已经能看到每次推送的耗时,到时候有数据可看。
         try:
+            is_first = True
             async for delta in self.runner.stream(frame.text):
                 buffer += delta
                 sentence, buffer = split_sentences(buffer)
                 if sentence:
-                    self._push_text(sentence, frame, tag, started)
+                    self._push_text(sentence, frame, tag, started, is_first=is_first)
+                    is_first = False
+                    
 
             if buffer.strip():
-                self._push_text(buffer.strip(), frame, tag, started)
+                self._push_text(buffer.strip(), frame, tag, started, is_first=is_first)
+                is_first = False
+                
+            self._push_text("", frame, tag, started, is_first=is_first, is_end=True)
+                
         except Exception as e:
-            self.push(TextFrame(text=f"不好意思，系统出了点毛病,再见。", utterance_id=frame.utterance_id, origin_ts=frame.origin_ts))
+            self._push_text("不好意思，系统出了点毛病,再见。", frame, tag, started, is_first=is_first, is_end=True)
             self.logger.error(f"{tag} LLM error: {e}")
+            
         elapsed = time.perf_counter() - started
 
         self.logger.info(f"{tag} LLM {elapsed:.2f}s: {frame.text!r}")

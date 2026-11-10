@@ -25,14 +25,31 @@ class Qwen3TTSComponent(PipelineComponent):
         return (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
 
     async def handle(self, frame):
-        if not isinstance(frame, TextFrame) or not frame.text.strip():
+        if not isinstance(frame, TextFrame):
+            return
+
+        # a plain TextFrame is a whole reply on its own
+        is_first = getattr(frame, "is_first", True)
+        is_end = getattr(frame, "is_end", True)
+        text = frame.text.strip()
+
+        if not text:
+            # nothing to say, but the reply boundary must still reach the transport
+            if is_first or is_end:
+                self.push(AudioFrame(
+                    audio_data=b"",
+                    utterance_id=frame.utterance_id,
+                    origin_ts=frame.origin_ts,
+                    is_first=is_first,
+                    is_end=is_end,
+                ))
             return
 
         tag = f"[#{frame.utterance_id}]"
-        self.logger.info(f"{tag} TTS start: {frame.text!r}")
+        self.logger.info(f"{tag} TTS start: {text!r}")
 
         started = time.perf_counter()
-        audio = await self.tts.synthesize(frame.text)
+        audio = await self.tts.synthesize(text)
         elapsed = time.perf_counter() - started
 
         audio_secs = len(audio) / self.tts.sample_rate
@@ -41,6 +58,8 @@ class Qwen3TTSComponent(PipelineComponent):
             audio_data=self._to_pcm16(audio),
             utterance_id=frame.utterance_id,
             origin_ts=frame.origin_ts,
+            is_first=is_first,
+            is_end=is_end,
         ))
 
     async def cleanup(self):

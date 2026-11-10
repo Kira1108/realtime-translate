@@ -9,6 +9,7 @@ setup_logging()
 from app.routers import test
 from app.routers import voice_changer
 from app.routers import translator
+from app.routers import chatbot
 
 def swagger_monkey_patch(*args, **kwargs):
     return get_swagger_ui_html(
@@ -34,3 +35,4 @@ app.add_middleware(
 app.include_router(test.router)
 app.include_router(voice_changer.router)
 app.include_router(translator.router)
+app.include_router(chatbot.router)

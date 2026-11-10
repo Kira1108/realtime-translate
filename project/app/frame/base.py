@@ -9,12 +9,12 @@ class Frame(BaseModel):
 
 class AudioFrame(Frame):
     audio_data: bytes
+    is_first:bool = False
+    is_end:bool = False
 
 class TextFrame(Frame):
     text: str
     
-class TextStreamFrame(Frame):
-    text_chunk:str
-    response_id:str
-    is_first:bool
-    is_end:bool
+class TextStreamFrame(TextFrame):
+    is_first:bool = False
+    is_end:bool = False
