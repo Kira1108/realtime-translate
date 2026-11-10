@@ -1,4 +1,5 @@
 import time
+from collections import deque
 
 from app.frame import AudioFrame
 from app.pipeline.component import PipelineComponent
@@ -19,6 +20,7 @@ class VADAccumulator(PipelineComponent):
         self,
         analyzer: VADAnalyzer | None = None,
         sample_rate: int = 16000,
+        pre_roll_secs: float = 0.3,
         controller=None,
         downstream=None,
     ):
@@ -26,6 +28,11 @@ class VADAccumulator(PipelineComponent):
         self.analyzer = analyzer or SileroVADAnalyzer(sample_rate=sample_rate)
         self.analyzer.set_sample_rate(sample_rate)
         self.sample_rate = sample_rate
+        # the VAD needs a moment to notice speech; keep this much audio from before it does,
+        # otherwise the first syllable is lost ('闭嘴' would reach STT as '嘴')
+        self.pre_roll_secs = pre_roll_secs
+        self._pre_roll: deque[bytes] = deque()
+        self._pre_roll_bytes = 0
         self._state = VADState.QUIET
         self._chunks: list[bytes] = []
         self._utterance_count = 0
@@ -51,6 +58,19 @@ class VADAccumulator(PipelineComponent):
             )
             self._window_ms.clear()
 
+    def _remember_quiet(self, chunk: bytes):
+        self._pre_roll.append(chunk)
+        self._pre_roll_bytes += len(chunk)
+        limit = int(self.pre_roll_secs * self.sample_rate) * 2
+        while self._pre_roll and self._pre_roll_bytes - len(self._pre_roll[0]) >= limit:
+            self._pre_roll_bytes -= len(self._pre_roll.popleft())
+
+    def _take_pre_roll(self) -> list[bytes]:
+        chunks = list(self._pre_roll)
+        self._pre_roll.clear()
+        self._pre_roll_bytes = 0
+        return chunks
+
     async def handle(self, frame):
         if not isinstance(frame, AudioFrame):
             return
@@ -66,10 +86,13 @@ class VADAccumulator(PipelineComponent):
             self._start_utterance()
 
         if self._state != VADState.QUIET:
+            if prev == VADState.QUIET:
+                self._chunks.extend(self._take_pre_roll())
             self._chunks.append(frame.audio_data)
             return
 
         if prev == VADState.QUIET:
+            self._remember_quiet(frame.audio_data)
             self._infer_ms.clear()  # only time the chunks around speech
             return
 
@@ -102,4 +125,5 @@ class VADAccumulator(PipelineComponent):
 
     async def cleanup(self):
         self._chunks.clear()
+        self._take_pre_roll()
         await self.analyzer.cleanup()
