@@ -60,6 +60,8 @@ class NaiveAgentComponent(PipelineComponent):
         started = time.perf_counter()
         buffer = ""  # local, so an aborted turn leaves nothing behind
         
+        # 句首空格和 strip():现在不处理没关系,但如果以后要在 TTS 前做文本匹配或者统计字数,这个空格会让人困惑。
+        # 一次推送包含多句:这个会影响首句延迟,但要等你实际用麦克风体验过,觉得回复开始得慢,再回来调。现在的日志已经能看到每次推送的耗时,到时候有数据可看。
         try:
             async for delta in self.runner.stream(frame.text):
                 buffer += delta
