@@ -1,8 +1,10 @@
 import asyncio
 import gc
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import AsyncIterator
 
 import mlx.core as mx
 import numpy as np
@@ -24,10 +26,13 @@ class Qwen3TTS:
         model_path: str = None,
         speaker: str = "Vivian",
         language: str = "Chinese",
+        streaming_interval: float = 1.0,
     ):
         self.model_path = model_path or get_config().qwen3_tts_model_path
         self.speaker = speaker
         self.language = language
+        # 流式输出时每块音频的大致时长（秒），越小首包越快，但每块的固定开销占比越大
+        self.streaming_interval = streaming_interval
 
         # 延迟到工作线程加载
         self.model = None
@@ -45,28 +50,41 @@ class Qwen3TTS:
             raise RuntimeError("请先调用 synthesize() 初始化采样率")
         return self._sample_rate
 
-    def _generate_once(self, text, max_tokens):
-        chunks = []
+    def _ensure_model(self):
+        # 只在专用工作线程里调用
+        if self.model is None:
+            logger.info("loading TTS model...")
+            started = time.perf_counter()
+            self.model = load_model(self.model_path)
+            logger.info(f"TTS model loaded in {time.perf_counter() - started:.1f}s")
 
+    def _max_tokens(self, text):
+        # 短文本模型可能不输出 EOS 一直生成到上限，按语言和文本长度估算合理时长
+        seconds_per_char = 0.15 if self.language == "English" else 0.4
+        return int((1.0 + seconds_per_char * len(text)) * 12.5)
+
+    def _iter_chunks(self, text, max_tokens, cancelled=None):
         for result in self.model.generate_custom_voice(
             text=text,
             speaker=self.speaker,
             language=self.language,
             max_tokens=max_tokens,
             stream=True,
-            streaming_interval=1.0,
+            streaming_interval=self.streaming_interval,
         ):
-            # aclose() 之后在 chunk 边界中止，避免关闭时等整句合成完
+            # aclose() 或调用方放弃之后，在 chunk 边界中止
             if self._closed:
                 raise RuntimeError("TTS 实例已关闭")
+            if cancelled is not None and cancelled.is_set():
+                return
 
             # 完成计算并复制，让返回数据独立于 MLX 数组
             mx.eval(result.audio)
-            chunks.append(
-                np.array(result.audio, dtype=np.float32, copy=True)
-            )
             self._sample_rate = result.sample_rate
+            yield np.array(result.audio, dtype=np.float32, copy=True)
 
+    def _generate_once(self, text, max_tokens):
+        chunks = list(self._iter_chunks(text, max_tokens))
         if not chunks:
             raise RuntimeError(f"No speech generated for text: {text}")
 
@@ -74,16 +92,8 @@ class Qwen3TTS:
 
     def _synthesize_sync(self, text, output_path):
         # 此方法仅由专用工作线程调用
-        if self.model is None:
-            logger.info("loading TTS model...")
-            started = time.perf_counter()
-            self.model = load_model(self.model_path)
-            logger.info(f"TTS model loaded in {time.perf_counter() - started:.1f}s")
-
-        # 短文本模型可能不输出 EOS 一直生成到上限，按语言和文本长度估算合理时长
-        seconds_per_char = 0.15 if self.language == "English" else 0.4
-        max_tokens = int((1.0 + seconds_per_char * len(text)) * 12.5)
-
+        self._ensure_model()
+        max_tokens = self._max_tokens(text)
         # 短文本偶尔会生成近乎静音的音频，采样有随机性，重试即可
         for attempt in range(MAX_ATTEMPTS):
             audio_array = self._generate_once(text, max_tokens)
@@ -103,6 +113,48 @@ class Qwen3TTS:
             logger.info(f"audio saved to {path}")
 
         return audio_array
+
+    async def synthesize_stream(self, text: str) -> AsyncIterator[np.ndarray]:
+        """边合成边产出 float32 音频块。流式输出无法事后检查整句音量，所以不做静音重试。"""
+        if self._closed:
+            raise RuntimeError("TTS 实例已关闭")
+        if not text.strip():
+            raise ValueError("text 不能为空")
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        cancelled = threading.Event()
+        done = object()
+
+        def emit(item):
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, item)
+            except RuntimeError:
+                cancelled.set()  # 事件循环已关闭，没人再收了
+
+        def work():
+            try:
+                self._ensure_model()
+                received = False
+                for chunk in self._iter_chunks(text, self._max_tokens(text), cancelled):
+                    received = True
+                    emit(chunk)
+                if not received and not cancelled.is_set():
+                    raise RuntimeError(f"No speech generated for text: {text}")
+            except BaseException as e:
+                emit(e)
+            finally:
+                emit(done)
+
+        loop.run_in_executor(self._executor, work)
+        try:
+            while (item := await queue.get()) is not done:
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+        finally:
+            # 调用方提前退出（如被打断）时让工作线程在下一个 chunk 边界停下
+            cancelled.set()
 
     async def synthesize(self, text: str, output_path: str = None):
         if self._closed:

@@ -14,6 +14,8 @@ SYSTEM_PROMPT = (
 )
 
 SENTENCE_ENDS = ".。!！?？\n"
+# closing marks that belong to the sentence before them, e.g. 他说：“好的。”
+CLOSING_MARKS = "\"'”’」』）)】]》>"
 MIN_SENTENCE_LEN = 3
 
 
@@ -22,6 +24,8 @@ def split_sentences(buffer: str) -> tuple[str, str]:
     last = max(buffer.rfind(c) for c in SENTENCE_ENDS)
     if last == -1:
         return "", buffer
+    while last + 1 < len(buffer) and buffer[last + 1] in CLOSING_MARKS:
+        last += 1
     head, rest = buffer[:last + 1], buffer[last + 1:]
     if len(head.strip()) <= MIN_SENTENCE_LEN:
         return "", buffer
@@ -32,12 +36,17 @@ class NaiveAgentRunner:
     def __init__(self, model_name: str | None = None, system_prompt: str = SYSTEM_PROMPT):
         model = create_pydantic_ai_model(model_name) if model_name else create_pydantic_ai_model()
         self.agent = Agent(model=model, system_prompt=system_prompt)
+        self.message_history = None
 
     async def stream(self, text: str) -> AsyncGenerator[str, None]:
-        async with self.agent.run_stream(text) as result:  
-            async for message in result.stream_text(delta = True):  
+        async with self.agent.run_stream(text, message_history=self.message_history) as result:
+            async for message in result.stream_text(delta=True):
                 yield message
-                
+            # only a fully streamed turn is remembered; an aborted one leaves the history as it was
+            self.message_history = result.all_messages()
+
+    def reset(self):
+        self.message_history = None
 
 class NaiveAgentComponent(PipelineComponent):
     """Handles each incoming TextFrame using the NaiveAgent."""

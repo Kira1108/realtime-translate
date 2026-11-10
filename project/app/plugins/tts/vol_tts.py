@@ -3,6 +3,7 @@ import base64
 import json
 import time
 from pathlib import Path
+from typing import AsyncIterator
 from uuid import uuid4
 
 import httpx
@@ -30,6 +31,7 @@ class VolTTS:
         sample_rate: int = 24000,
         uid: str = "realtime-translate",
         timeout: float = 60.0,
+        min_chunk_secs: float = 0.1,
     ):
         self.api_key = api_key or get_config().volc_tts_api_key
         if not self.api_key:
@@ -38,6 +40,7 @@ class VolTTS:
         self.resource_id = resource_id
         self._sample_rate = sample_rate
         self.uid = uid
+        self.min_chunk_secs = min_chunk_secs
 
         self._closed = False
         self._client = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0))
@@ -68,9 +71,9 @@ class VolTTS:
         }
         return headers, payload
 
-    async def _request_pcm(self, text) -> bytes:
+    async def _stream_pcm(self, text) -> AsyncIterator[bytes]:
         headers, payload = self._build_request(text)
-        audio = bytearray()
+        received = False
 
         async with self._client.stream("POST", API_URL, headers=headers, json=payload) as response:
             if response.status_code != 200:
@@ -91,27 +94,44 @@ class VolTTS:
                 if code != CODE_OK:
                     raise RuntimeError(f"语音合成失败 ({code})：{chunk.get('message')}")
                 if chunk.get("data"):
-                    audio.extend(base64.b64decode(chunk["data"], validate=True))
+                    received = True
+                    yield base64.b64decode(chunk["data"], validate=True)
             else:
                 raise RuntimeError("连接已关闭，但未收到合成完成消息")
 
-        if not audio:
+        if not received:
             raise RuntimeError(f"No speech generated for text: {text}")
-        return bytes(audio)
 
-    async def synthesize(self, text: str, output_path: str = None):
+    async def synthesize_stream(self, text: str) -> AsyncIterator[np.ndarray]:
+        """边合成边产出 float32 音频块，收到一块就交出去。"""
         if self._closed:
             raise RuntimeError("TTS 实例已关闭")
         if not text.strip():
             raise ValueError("text 不能为空")
 
-        started = time.perf_counter()
-        pcm = await self._request_pcm(text)
-        logger.debug(f"TTS request done in {time.perf_counter() - started:.2f}s")
+        # 块边界可能把一个 16-bit 采样切成两半，余下的字节留给下一块；
+        # 服务端还会夹杂几字节的碎块，攒够 min_chunk_secs 再交出去（首块不等）
+        min_bytes = int(self.min_chunk_secs * self._sample_rate) * 2
+        pending = b""
+        first = True
+        async for data in self._stream_pcm(text):
+            pending += data
+            if len(pending) < (2 if first else min_bytes):
+                continue
+            cut = len(pending) // 2 * 2
+            pcm, pending = pending[:cut], pending[cut:]
+            first = False
+            yield np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
 
-        # 奇数字节说明末尾不完整，截掉半个采样
-        pcm = pcm[: len(pcm) // 2 * 2]
-        audio_array = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+        cut = len(pending) // 2 * 2
+        if cut:
+            yield np.frombuffer(pending[:cut], dtype="<i2").astype(np.float32) / 32768.0
+
+    async def synthesize(self, text: str, output_path: str = None):
+        started = time.perf_counter()
+        chunks = [chunk async for chunk in self.synthesize_stream(text)]
+        logger.debug(f"TTS request done in {time.perf_counter() - started:.2f}s")
+        audio_array = np.concatenate(chunks)
 
         if output_path is not None:
             path = Path(output_path).resolve()
