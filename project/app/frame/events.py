@@ -37,3 +37,9 @@ class BotStoppedSpeakingFrame(EventFrame):
     utterance_id: Optional[int] = Field(default=None, description="utterance this reply answers")
 
 
+class InterruptFrame(EventFrame):
+    """The user cut the bot off: drop the current reply everywhere. Also sent to the client to flush playback."""
+    event_type: Literal["interrupt"] = Field(default="interrupt", description = "type of the event frame")
+    utterance_id: Optional[int] = Field(default=None, description="utterance whose reply is being interrupted")
+
+

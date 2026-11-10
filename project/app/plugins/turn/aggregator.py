@@ -1,7 +1,7 @@
 import asyncio
 import time
 
-from app.frame import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, StopFrame, TextFrame
+from app.frame import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, InterruptFrame, StopFrame, TextFrame
 from app.pipeline.component import PipelineComponent
 
 
@@ -34,6 +34,15 @@ class UserUtteranceAggregator(PipelineComponent):
         self._restart_watchdog()
         self.logger.info(f"[#{frame.utterance_id}] user turn: {frame.text!r}")
         self.push(frame)
+
+    def interrupt_bot(self, frame: TextFrame):
+        """Cut the bot off: broadcast InterruptFrame so LLM/TTS/transport drop the current reply."""
+        turn_id = self._turn_id
+        self.logger.info(f"[#{frame.utterance_id}] interrupting reply to #{turn_id}: {frame.text!r}")
+        if self.controller:
+            self.controller.receive(InterruptFrame(utterance_id=turn_id))
+        # the interrupted reply never sends its end, so become idle here
+        self._set_idle()
 
     def _set_idle(self):
         self.bot_busy = False
@@ -91,12 +100,44 @@ class UserUtteranceAggregator(PipelineComponent):
 class DropWhileBotBusyAggregator(UserUtteranceAggregator):
     """Strict half duplex: anything the user says while the bot is thinking or speaking is dropped."""
 
+    def drop(self, frame: TextFrame):
+        if self.bot_busy:
+            reason = "bot speaking" if self.bot_speaking else "bot thinking"
+        else:
+            reason = "spoken while bot was talking"
+        self.logger.info(f"[#{frame.utterance_id}] dropped, {reason}: {frame.text!r}")
+
     async def on_user_text(self, frame: TextFrame):
         if self.overlapped_bot(frame):
-            if self.bot_busy:
-                reason = "bot speaking" if self.bot_speaking else "bot thinking"
-            else:
-                reason = "spoken while bot was talking"
-            self.logger.info(f"[#{frame.utterance_id}] dropped, {reason}: {frame.text!r}")
+            self.drop(frame)
             return
         self.start_turn(frame)
+
+
+STOP_WORDS = ("闭嘴",)
+
+
+def is_stop_command(text: str, stop_words=STOP_WORDS) -> bool:
+    """True if the utterance contains any stop word, anywhere: '闭嘴', '你给我闭嘴吧'."""
+    normalized = "".join(ch for ch in text if ch.isalnum())
+    return any(w in normalized for w in stop_words)
+
+
+class KeywordInterruptAggregator(DropWhileBotBusyAggregator):
+    """Half duplex plus a spoken stop command: while the bot is busy, an utterance containing '闭嘴' interrupts it,
+    everything else is dropped. A stop command said while the bot is idle is ignored rather than sent to the LLM."""
+
+    def __init__(self, stop_words=STOP_WORDS, **kwargs):
+        super().__init__(**kwargs)
+        self.stop_words = stop_words
+
+    async def on_user_text(self, frame: TextFrame):
+        is_command = is_stop_command(frame.text, self.stop_words)
+        if is_command and self.bot_busy:
+            self.interrupt_bot(frame)
+        elif is_command:
+            self.logger.info(f"[#{frame.utterance_id}] stop command while bot idle, ignored: {frame.text!r}")
+        elif self.overlapped_bot(frame):
+            self.drop(frame)
+        else:
+            self.start_turn(frame)

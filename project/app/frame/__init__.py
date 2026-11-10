@@ -3,6 +3,7 @@ from .events import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     EventFrame,
+    InterruptFrame,
     ReplyEndFrame,
     StopFrame,
 )

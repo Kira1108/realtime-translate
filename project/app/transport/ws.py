@@ -10,6 +10,7 @@ from app.frame import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     EventFrame,
+    InterruptFrame,
     ReplyEndFrame,
     StopFrame,
 )
@@ -107,6 +108,8 @@ class TransportOutput(PipelineComponent):
     upstream components (e.g. the user utterance aggregator) know whether the bot is talking.
     """
 
+    control_frames = (StopFrame, InterruptFrame)
+
     def __init__(self,
             websocket: WebSocket,
             controller: SessionController | None = None,
@@ -138,6 +141,19 @@ class TransportOutput(PipelineComponent):
             self._notify(BotStoppedSpeakingFrame(utterance_id=utterance_id))
 
         self._stopped_speaking_task = asyncio.create_task(emit())
+
+    async def on_control(self, frame: EventFrame):
+        if isinstance(frame, InterruptFrame):
+            # don't cancel a send in progress (it would cut a websocket message in half),
+            # just drop what is queued and tell the client, in order, to flush its playback
+            dropped = self.drop_backlog()
+            if self._stopped_speaking_task is not None:
+                self._stopped_speaking_task.cancel()
+            self._playback_end = 0.0
+            self.put(frame)
+            self.logger.info(f"[#{frame.utterance_id}] interrupted, dropped {dropped} queued frame(s)")
+        else:
+            await super().on_control(frame)
 
     async def output_audio(self, frame: AudioFrame):
         tag = f"[#{frame.utterance_id}]"

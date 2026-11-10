@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 
-from app.frame import AudioFrame, TextFrame
+from app.frame import AudioFrame, InterruptFrame, StopFrame, TextFrame
 from app.pipeline.component import PipelineComponent
 
 from .qwen3_tts import Qwen3TTS
@@ -11,6 +11,8 @@ from .vol_tts import VolTTS
 
 class Qwen3TTSComponent(PipelineComponent):
     """Turns each incoming TextFrame into AudioFrames of int16 PCM, pushed chunk by chunk as they are synthesized."""
+
+    control_frames = (StopFrame, InterruptFrame)
 
     def __init__(self, tts: Qwen3TTS | None = None, controller=None, downstream=None):
         super().__init__(controller, downstream)
