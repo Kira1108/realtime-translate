@@ -13,7 +13,6 @@ from app.pipeline.component import PipelineComponent
 from .qwen3_stt import Qwen3STT
 from .tencent_stt import ASRResult, SLICE_FINAL, TencentASRStream, TencentStreamingSTT
 
-
 class Qwen3STTComponent(PipelineComponent):
     """Turns each incoming AudioFrame (one 16 kHz int16 PCM utterance) into a TextAudioFrame:
     the recognized text plus the audio it came from. It is a TextFrame, so text-only consumers are unaffected."""
