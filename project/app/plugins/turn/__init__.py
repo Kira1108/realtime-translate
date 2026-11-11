@@ -1,1 +1,1 @@
-from .aggregator import DropWhileBotBusyAggregator, UserUtteranceAggregator
+from .aggregator import DropWhileBotBusyAggregator, KeywordInterruptAggregator, UserUtteranceAggregator

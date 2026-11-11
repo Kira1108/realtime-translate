@@ -1,5 +1,5 @@
 from __future__ import annotations
-from app.frame import StopFrame
+from app.frame import InterruptFrame, StopFrame
 import asyncio
 from loguru import logger
 
@@ -24,8 +24,8 @@ class PipelineComponent:
         停止:收到 StopFrame 后,基类会取消正在处理的帧、丢弃积压、执行 cleanup,
             并把 StopFrame 转发给下游。子类只需实现 cleanup。
 
-        打断:InterruptFrame 将取消当前帧并丢弃积压,但组件继续运行,不转发给下游
-            (下游各自订阅广播)。尚未实现。
+        打断:订阅了 InterruptFrame 的组件(在 control_frames 里声明)收到后,取消当前帧并丢弃积压,
+            但组件继续运行,不转发给下游(下游各自订阅广播)。被取消的 handle 不会走 on_error。
 
         注意:取消只在 await 处生效。线程里的阻塞推理需要插件自己检查中止标志。
         """
@@ -40,6 +40,8 @@ class PipelineComponent:
         self._stopped:bool = False
         # set when the controller broadcasts a stop: abort the current frame, drop the backlog
         self._stop_event = asyncio.Event()
+        # the task running `handle` for the current frame, so an interrupt can cancel it
+        self._handling: asyncio.Task | None = None
         self.controller = None
         if controller:
             self.bind(controller)
@@ -77,6 +79,32 @@ class PipelineComponent:
         if isinstance(frame, StopFrame):
             self._stop_event.set()
             self.put(frame)
+        elif isinstance(frame, InterruptFrame):
+            self.interrupt(frame)
+
+    def drop_backlog(self) -> int:
+        """Discard queued frames (a pending StopFrame is kept). Returns how many were dropped."""
+        kept, dropped = [], 0
+        while True:
+            try:
+                queued = self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if isinstance(queued, StopFrame):
+                kept.append(queued)
+            else:
+                dropped += 1
+        for queued in kept:
+            self.queue.put_nowait(queued)
+        return dropped
+
+    def interrupt(self, frame: InterruptFrame):
+        """Default interrupt: cancel the frame being handled and drop the backlog; the run loop keeps going."""
+        dropped = self.drop_backlog()
+        cancelled = self._handling is not None and not self._handling.done()
+        if cancelled:
+            self._handling.cancel()
+        self.logger.info(f"interrupted: cancelled current={cancelled}, dropped {dropped} queued frame(s)")
             
     async def on_error(self, frame, exc):
         """Called when `handle` raises. Default: log with traceback and keep running.
@@ -117,14 +145,18 @@ class PipelineComponent:
     async def _handle_or_abort(self, frame, stop_wait: asyncio.Task):
         """Run `handle`, cancelling it as soon as a stop is requested."""
         handling = asyncio.create_task(self.handle(frame))
+        self._handling = handling
         try:
             await asyncio.wait({handling, stop_wait}, return_when=asyncio.FIRST_COMPLETED)
             if not handling.done():
                 handling.cancel()
                 await asyncio.gather(handling, return_exceptions=True)
                 return
+            if handling.cancelled():
+                return  # cancelled by an interrupt
             handling.result()
         finally:
+            self._handling = None
             if not handling.done():
                 handling.cancel()
 

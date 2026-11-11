@@ -2,7 +2,7 @@ import time
 from typing import AsyncGenerator
 from pydantic_ai import Agent
 
-from app.frame import TextFrame, TextStreamFrame
+from app.frame import InterruptFrame, StopFrame, TextFrame, TextStreamFrame
 from app.pipeline.component import PipelineComponent
 
 from .openrouter import create_pydantic_ai_model
@@ -50,6 +50,8 @@ class NaiveAgentRunner:
 
 class NaiveAgentComponent(PipelineComponent):
     """Handles each incoming TextFrame using the NaiveAgent."""
+
+    control_frames = (StopFrame, InterruptFrame)
 
     def __init__(self, runner: NaiveAgentRunner | None = None, controller=None, downstream=None):
         super().__init__(controller, downstream)
