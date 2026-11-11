@@ -23,6 +23,15 @@ class TextFrame(Frame):
 class TextStreamFrame(TextFrame):
     is_first:bool = False
     is_end:bool = False
+
+
+class InterimTextFrame(Frame):
+    """A streaming STT's not-yet-final transcript of the speech in progress; later ones replace earlier ones.
+    Deliberately NOT a TextFrame: text consumers must not treat it as a finished utterance. The final
+    result follows as a TextAudioFrame. Useful for decisions that cannot wait, e.g. barge-in."""
+    text: str
+    audio_start: float | None = None  # same audio clock as AudioFrame / TextAudioFrame
+    audio_end: float | None = None
     
     
 def _join_text(earlier: str, later: str) -> str:

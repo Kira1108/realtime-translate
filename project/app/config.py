@@ -54,6 +54,18 @@ class Config:
     def volc_tts_api_key(self):
         return self._get_env("VOLC_TTS_API_KEY")
 
+    @property
+    def tencent_asr_secret_id(self):
+        return self._get_env("TENCENT_ASR_SECRET_ID")
+
+    @property
+    def tencent_asr_secret_key(self):
+        return self._get_env("TENCENT_ASR_SECRET_KEY")
+
+    @property
+    def tencent_asr_appid(self):
+        return self._get_env("TENCENT_ASR_APPID") or "1255510356"
+
 
 @lru_cache(maxsize=None)
 def get_config() -> Config:
