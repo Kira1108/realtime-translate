@@ -10,6 +10,8 @@ from app.frame import (
     StopFrame,
     TextAudioFrame,
     TextFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
 )
 from app.pipeline.component import PipelineComponent
 
@@ -225,7 +227,13 @@ class SmartTurnKeywordInterruptAggregator(KeywordInterruptAggregator):
     turn's audio. If the user is done, the turn starts; if not, it waits `turn_wait_secs` for the next
     utterance (which is merged in and judged again), then starts the turn anyway.
     Utterances without audio (plain TextFrame) start a turn right away.
+
+    The wait is paused while the VAD hears the user speaking (UserStartedSpeakingFrame), since the next
+    utterance's text only arrives after STT; it restarts when the user goes quiet (UserStoppedSpeakingFrame),
+    in case that speech yields no text. A pending turn is never started while the user is speaking.
     """
+
+    control_frames = KeywordInterruptAggregator.control_frames + (UserStartedSpeakingFrame, UserStoppedSpeakingFrame)
 
     def __init__(self, turn_wait_secs: float = 1.5, **kwargs):
         super().__init__(**kwargs)
@@ -233,6 +241,24 @@ class SmartTurnKeywordInterruptAggregator(KeywordInterruptAggregator):
         self.turn_wait_secs = turn_wait_secs
         self.pending_frame: TextAudioFrame | None = None
         self._wait_task: asyncio.Task | None = None
+        # set from the VAD's start/stop events
+        self._user_speaking = False
+
+    async def on_control(self, frame):
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self._user_speaking = True
+            if self._wait_task is not None:
+                # the user goes on: wait for this speech's text instead of timing out
+                self._cancel_wait()
+                self.logger.info(f"[#{self.pending_frame.utterance_id}] ⏸️ user speaking again, wait paused")
+        elif isinstance(frame, UserStoppedSpeakingFrame):
+            self._user_speaking = False
+            # its text normally arrives right after STT and is judged then; the restarted wait only
+            # matters if it never does (false start, empty STT result)
+            if self.pending_frame is not None and self._wait_task is None:
+                self._wait_then_flush()
+        else:
+            await super().on_control(frame)
 
     def _cancel_wait(self):
         if self._wait_task is not None:
@@ -286,7 +312,10 @@ class SmartTurnKeywordInterruptAggregator(KeywordInterruptAggregator):
 
         if self.pending_frame is not pending:
             return  # flushed meanwhile (cleanup)
-        if result.is_done:
+        if self._user_speaking:
+            # already talking again: whatever the model says, hold on; the next text re-judges the turn
+            self.logger.info(f"{tag} ⏸️ TURN HELD p={result.probability:.2f}, user already speaking again: {pending.text!r}")
+        elif result.is_done:
             self.logger.info(f"{tag} 🟢 TURN DONE p={result.probability:.2f}: {pending.text!r}")
             self._flush_pending(f"p={result.probability:.2f}")
         else:

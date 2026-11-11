@@ -1,7 +1,7 @@
 import time
 from collections import deque
 
-from app.frame import AudioFrame
+from app.frame import AudioFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from app.pipeline.component import PipelineComponent
 
 from .silero_vad import SileroVADAnalyzer
@@ -60,6 +60,11 @@ class VADAccumulator(PipelineComponent):
             )
             self._window_ms.clear()
 
+    def _notify(self, frame):
+        """Broadcast a control event (no-op without a controller, e.g. in tests)."""
+        if self.controller:
+            self.controller.receive(frame)
+
     def _remember_quiet(self, chunk: bytes):
         self._pre_roll.append(chunk)
         self._pre_roll_bytes += len(chunk)
@@ -91,6 +96,8 @@ class VADAccumulator(PipelineComponent):
         if self._state != VADState.QUIET:
             if prev == VADState.QUIET:
                 self._chunks.extend(self._take_pre_roll())
+                # tell turn-taking right away; the text of this speech only arrives after STT
+                self._notify(UserStartedSpeakingFrame(utterance_id=self._utterance_count + 1))
             self._chunks.append(frame.audio_data)
             return
 
@@ -102,11 +109,13 @@ class VADAccumulator(PipelineComponent):
         # STARTING -> QUIET is a false start, nothing confirmed as speech
         if prev == VADState.STARTING:
             self.logger.debug(f"false start dropped ({len(self._chunks)} chunks)")
+            self._notify(UserStoppedSpeakingFrame(utterance_id=None))
         else:
             if self._utterance_id is None:
                 self._start_utterance()
             self._chunks.append(frame.audio_data)
             self._finish_utterance()
+            self._notify(UserStoppedSpeakingFrame(utterance_id=self._utterance_id))
         self._chunks.clear()
         self._utterance_id = None
         self._infer_ms.clear()

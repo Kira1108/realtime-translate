@@ -6,4 +6,6 @@ from .events import (
     InterruptFrame,
     ReplyEndFrame,
     StopFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
 )
