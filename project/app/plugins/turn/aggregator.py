@@ -1,7 +1,18 @@
 import asyncio
 import time
 
-from app.frame import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, InterruptFrame, StopFrame, TextFrame
+import numpy as np
+
+from app.frame import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    InterruptFrame,
+    StopFrame,
+    TextAudioFrame,
+    TextFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
+)
 from app.pipeline.component import PipelineComponent
 
 
@@ -48,6 +59,9 @@ class UserUtteranceAggregator(PipelineComponent):
         self._turn_id = frame.utterance_id
         self._restart_watchdog()
         self.logger.info(f"[#{frame.utterance_id}] user turn: {frame.text!r}")
+        # past the aggregator only the text matters: drop the user's audio here
+        if isinstance(frame, TextAudioFrame):
+            frame = TextFrame(text=frame.text, utterance_id=frame.utterance_id, origin_ts=frame.origin_ts)
         self.push(frame)
 
     def interrupt_bot(self, frame: TextFrame):
@@ -195,6 +209,120 @@ class KeywordInterruptAggregator(DropWhileBotBusyAggregator):
         # 如果是重叠说话，直接drop
         elif self.overlapped_bot(frame):
             self.drop(frame)
-        # 如果是在用户轮次说话，开启一个新的轮次
+        # 如果是在用户轮次说话，交给 accept_utterance（默认直接开启一个新的轮次）
         else:
+            await self.accept_utterance(frame)
+
+    async def accept_utterance(self, frame: TextFrame):
+        """An utterance the bot should respond to (bot idle, not a stop command, no overlap).
+        Default: start a turn right away. Subclasses may hold it back, e.g. until the user has finished."""
+        self.start_turn(frame)
+
+
+class SmartTurnKeywordInterruptAggregator(KeywordInterruptAggregator):
+    """KeywordInterruptAggregator that waits for the user to finish their turn before answering.
+
+    VAD cuts on a short pause, so one turn may arrive as several utterances ('我想问一下……', '明天天气怎么样').
+    Each accepted utterance is merged into the pending turn, and the smart-turn model judges the pending
+    turn's audio. If the user is done, the turn starts; if not, it waits `turn_wait_secs` for the next
+    utterance (which is merged in and judged again), then starts the turn anyway.
+    Utterances without audio (plain TextFrame) start a turn right away.
+
+    The wait is paused while the VAD hears the user speaking (UserStartedSpeakingFrame), since the next
+    utterance's text only arrives after STT; it restarts when the user goes quiet (UserStoppedSpeakingFrame),
+    in case that speech yields no text. A pending turn is never started while the user is speaking.
+    """
+
+    control_frames = KeywordInterruptAggregator.control_frames + (UserStartedSpeakingFrame, UserStoppedSpeakingFrame)
+
+    def __init__(self, turn_wait_secs: float = 1.5, **kwargs):
+        super().__init__(**kwargs)
+        # how long to wait for more speech after the model says the user has not finished
+        self.turn_wait_secs = turn_wait_secs
+        self.pending_frame: TextAudioFrame | None = None
+        self._wait_task: asyncio.Task | None = None
+        # set from the VAD's start/stop events
+        self._user_speaking = False
+
+    async def on_control(self, frame):
+        if isinstance(frame, UserStartedSpeakingFrame):
+            self._user_speaking = True
+            if self._wait_task is not None:
+                # the user goes on: wait for this speech's text instead of timing out
+                self._cancel_wait()
+                self.logger.info(f"[#{self.pending_frame.utterance_id}] ⏸️ user speaking again, wait paused")
+        elif isinstance(frame, UserStoppedSpeakingFrame):
+            self._user_speaking = False
+            # its text normally arrives right after STT and is judged then; the restarted wait only
+            # matters if it never does (false start, empty STT result)
+            if self.pending_frame is not None and self._wait_task is None:
+                self._wait_then_flush()
+        else:
+            await super().on_control(frame)
+
+    def _cancel_wait(self):
+        if self._wait_task is not None:
+            self._wait_task.cancel()
+            self._wait_task = None
+
+    def _flush_pending(self, reason: str):
+        """Start a turn with everything pending."""
+        self._cancel_wait()
+        pending, self.pending_frame = self.pending_frame, None
+        if pending is not None:
+            self.logger.info(f"[#{pending.utterance_id}] turn complete ({reason})")
+            self.start_turn(pending)
+
+    def _wait_then_flush(self):
+        self._cancel_wait()
+
+        async def expire():
+            await asyncio.sleep(self.turn_wait_secs)
+            self._wait_task = None
+            self._flush_pending(f"no more speech after {self.turn_wait_secs:.1f}s")
+
+        self._wait_task = asyncio.create_task(expire())
+
+    @staticmethod
+    def _to_float(frame: TextAudioFrame) -> np.ndarray:
+        return np.frombuffer(frame.audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+
+    async def accept_utterance(self, frame: TextFrame):
+        if not isinstance(frame, TextAudioFrame) or not frame.audio_data:
+            self._flush_pending("utterance without audio")
             self.start_turn(frame)
+            return
+        if frame.sample_rate not in (None, 16000):
+            raise ValueError(f"smart turn needs 16 kHz audio, got {frame.sample_rate} Hz")
+
+        # more speech arrived: stop the countdown and judge the whole turn so far
+        self._cancel_wait()
+        self.pending_frame = frame if self.pending_frame is None else self.pending_frame.merge(frame)
+        pending = self.pending_frame
+        tag = f"[#{pending.utterance_id}]"
+
+        from app.audio.smart_turn import get_smart_turn_detector
+        detector = await asyncio.to_thread(get_smart_turn_detector)  # loads the model on first use
+        started = time.perf_counter()
+        result = await detector.user_turn_done(self._to_float(pending))
+        self.logger.info(
+            f"{tag} smart turn {(time.perf_counter() - started) * 1000:.0f}ms: "
+            f"p={result.probability:.2f} done={result.is_done} ({pending.duration:.2f}s of audio): {pending.text!r}"
+        )
+
+        if self.pending_frame is not pending:
+            return  # flushed meanwhile (cleanup)
+        if self._user_speaking:
+            # already talking again: whatever the model says, hold on; the next text re-judges the turn
+            self.logger.info(f"{tag} ⏸️ TURN HELD p={result.probability:.2f}, user already speaking again: {pending.text!r}")
+        elif result.is_done:
+            self.logger.info(f"{tag} 🟢 TURN DONE p={result.probability:.2f}: {pending.text!r}")
+            self._flush_pending(f"p={result.probability:.2f}")
+        else:
+            self.logger.info(f"{tag} 🔴 TURN NOT DONE p={result.probability:.2f}, waiting {self.turn_wait_secs:.1f}s: {pending.text!r}")
+            self._wait_then_flush()
+
+    async def cleanup(self):
+        self._cancel_wait()
+        self.pending_frame = None
+        await super().cleanup()

@@ -43,3 +43,16 @@ class InterruptFrame(EventFrame):
     utterance_id: Optional[int] = Field(default=None, description="utterance whose reply is being interrupted")
 
 
+
+
+class UserStartedSpeakingFrame(EventFrame):
+    """Broadcast by the VAD as soon as it hears possible speech (before it is confirmed).
+    Its text arrives later, after STT; may be followed by a stop without any text (false start)."""
+    event_type: Literal["user_started_speaking"] = Field(default="user_started_speaking", description = "type of the event frame")
+    utterance_id: Optional[int] = Field(default=None, description="id the utterance will get if confirmed")
+
+
+class UserStoppedSpeakingFrame(EventFrame):
+    """Broadcast by the VAD when the user goes quiet again: an utterance ended, or a false start was dropped."""
+    event_type: Literal["user_stopped_speaking"] = Field(default="user_stopped_speaking", description = "type of the event frame")
+    utterance_id: Optional[int] = Field(default=None, description="utterance that ended, None for a false start")

@@ -1,7 +1,7 @@
 import time
 from collections import deque
 
-from app.frame import AudioFrame
+from app.frame import AudioFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
 from app.pipeline.component import PipelineComponent
 
 from .silero_vad import SileroVADAnalyzer
@@ -35,6 +35,8 @@ class VADAccumulator(PipelineComponent):
         self._pre_roll_bytes = 0
         self._state = VADState.QUIET
         self._chunks: list[bytes] = []
+        # audio clock: samples received so far, so utterances can be located in the input stream
+        self._samples_seen = 0
         self._utterance_count = 0
         self._utterance_id: int | None = None   # set once speech is confirmed
         self._speech_started_at = 0.0
@@ -58,6 +60,11 @@ class VADAccumulator(PipelineComponent):
             )
             self._window_ms.clear()
 
+    def _notify(self, frame):
+        """Broadcast a control event (no-op without a controller, e.g. in tests)."""
+        if self.controller:
+            self.controller.receive(frame)
+
     def _remember_quiet(self, chunk: bytes):
         self._pre_roll.append(chunk)
         self._pre_roll_bytes += len(chunk)
@@ -74,6 +81,7 @@ class VADAccumulator(PipelineComponent):
     async def handle(self, frame):
         if not isinstance(frame, AudioFrame):
             return
+        self._samples_seen += len(frame.audio_data) // 2
 
         prev = self._state
         started = time.perf_counter()
@@ -88,6 +96,8 @@ class VADAccumulator(PipelineComponent):
         if self._state != VADState.QUIET:
             if prev == VADState.QUIET:
                 self._chunks.extend(self._take_pre_roll())
+                # tell turn-taking right away; the text of this speech only arrives after STT
+                self._notify(UserStartedSpeakingFrame(utterance_id=self._utterance_count + 1))
             self._chunks.append(frame.audio_data)
             return
 
@@ -99,11 +109,13 @@ class VADAccumulator(PipelineComponent):
         # STARTING -> QUIET is a false start, nothing confirmed as speech
         if prev == VADState.STARTING:
             self.logger.debug(f"false start dropped ({len(self._chunks)} chunks)")
+            self._notify(UserStoppedSpeakingFrame(utterance_id=None))
         else:
             if self._utterance_id is None:
                 self._start_utterance()
             self._chunks.append(frame.audio_data)
             self._finish_utterance()
+            self._notify(UserStoppedSpeakingFrame(utterance_id=self._utterance_id))
         self._chunks.clear()
         self._utterance_id = None
         self._infer_ms.clear()
@@ -117,8 +129,13 @@ class VADAccumulator(PipelineComponent):
             f"({len(self._chunks)} chunks), wall {time.perf_counter() - self._speech_started_at:.2f}s, "
             f"VAD avg {sum(infer) / len(infer):.1f}ms max {max(infer):.1f}ms"
         )
+        # the utterance's chunks (pre-roll included) are contiguous and end with the current chunk
+        audio_end = self._samples_seen / self.sample_rate
         self.push(AudioFrame(
             audio_data=audio,
+            sample_rate=self.sample_rate,
+            audio_start=audio_end - duration,
+            audio_end=audio_end,
             utterance_id=self._utterance_id,
             origin_ts=time.time(),
         ))

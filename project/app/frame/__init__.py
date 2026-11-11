@@ -1,4 +1,4 @@
-from .base import AudioFrame, TextFrame, TextStreamFrame
+from .base import AudioFrame, TextAudioFrame, TextFrame, TextStreamFrame
 from .events import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
@@ -6,4 +6,6 @@ from .events import (
     InterruptFrame,
     ReplyEndFrame,
     StopFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
 )
