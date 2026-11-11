@@ -12,6 +12,8 @@ from app.transport.ws import WebsocketTransport
 from app.plugins.llm.naive_agent import NaiveAgentComponent
 from app.plugins.turn import KeywordInterruptAggregator
 from app.plugins.turn import SmartTurnKeywordInterruptAggregator
+from app.plugins.turn import BargeInAggregator
+from app.plugins.stt.component import TencentSTTComponent
 
 router = APIRouter(
     prefix = "/websocket",
@@ -24,18 +26,31 @@ async def chatbot_endpoint(websocket: WebSocket):
     """Chinese speech in (16 kHz int16 PCM), English speech out (24 kHz int16 PCM)."""
     await websocket.accept()
 
+    # pipeline = Pipeline(
+    #     WebsocketTransport(websocket),
+    #     [
+    #         VADAccumulator(),
+    #         Qwen3STTComponent(),
+    #         # KeywordInterruptAggregator(),
+    #         SmartTurnKeywordInterruptAggregator(),
+    #         NaiveAgentComponent(),
+    #         VolTTSComponent(VolTTS()),
+    #         # VolTTS2Component(),
+    #     ],
+    # )
+    
+    
     pipeline = Pipeline(
-        WebsocketTransport(websocket),
-        [
-            VADAccumulator(),
-            Qwen3STTComponent(),
-            # KeywordInterruptAggregator(),
-            SmartTurnKeywordInterruptAggregator(),
-            NaiveAgentComponent(),
-            VolTTSComponent(VolTTS()),
-            # VolTTS2Component(),
-        ],
-    )
+            WebsocketTransport(websocket),
+            [
+                TencentSTTComponent(),
+                # SmartTurnKeywordInterruptAggregator(),
+                BargeInAggregator(),
+                NaiveAgentComponent(),
+                VolTTSComponent(VolTTS()),
+                # VolTTS2Component(),
+            ],
+        )
     try:
         await pipeline.run()
     finally:

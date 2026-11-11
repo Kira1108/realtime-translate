@@ -7,6 +7,7 @@ from app.frame import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     InterruptFrame,
+    InterimTextFrame,
     StopFrame,
     TextAudioFrame,
     TextFrame,
@@ -144,12 +145,22 @@ class UserUtteranceAggregator(PipelineComponent):
         return frame.origin_ts is not None and frame.origin_ts <= self._bot_idle_since
 
     async def handle(self, frame):
+        # 流式 STT 的中间结果：交给 on_interim_text（默认忽略），它不是 TextFrame，不会走下面的流程
+        if isinstance(frame, InterimTextFrame):
+            if frame.text.strip():
+                await self.on_interim_text(frame)
+            return
         # handle 只处理上游的非空文本帧，其他类型的帧和空文本直接忽略
         # （bot 的忙闲状态靠 on_control 收到的通知更新，和 handle 同样重要）
         if not isinstance(frame, TextFrame) or not frame.text.strip():
             return
         # 真正处理文本帧的方法就是这个on_user_text
         await self.on_user_text(frame)
+
+    async def on_interim_text(self, frame: InterimTextFrame):
+        """The sentence the user is speaking right now, not final yet (streaming STT only).
+        Default: ignore; the final text arrives later through on_user_text. Override for decisions
+        that cannot wait for the sentence to end, e.g. barge-in."""
 
     async def on_user_text(self, frame: TextFrame):
         raise NotImplementedError
@@ -326,3 +337,88 @@ class SmartTurnKeywordInterruptAggregator(KeywordInterruptAggregator):
         self._cancel_wait()
         self.pending_frame = None
         await super().cleanup()
+
+# short acknowledgements said while listening ("嗯嗯", "对对对", "好的"): not an attempt to take the turn
+BACKCHANNEL_CHARS = set("嗯恩唔啊哦噢喔呃额哈嘿对是好行的嘛呀")
+BACKCHANNEL_PHRASES = ("没错", "没问题", "明白", "了解", "收到", "可以", "知道了")
+
+
+def is_backchannel(text: str) -> bool:
+    """True for listener noises: '嗯嗯嗯', '对对对', '好的', '是的呀', '明白'."""
+    normalized = "".join(ch for ch in text if ch.isalnum())
+    if not normalized or all(ch in BACKCHANNEL_CHARS for ch in normalized):
+        return True
+    return normalized in BACKCHANNEL_PHRASES
+
+
+class BargeInAggregator(SmartTurnKeywordInterruptAggregator):
+    """Lets the user cut in while the bot is busy, decided on the streaming STT's interim text.
+
+    While the bot is thinking or speaking, each InterimTextFrame of the sentence being spoken is checked:
+      - contains a stop word ('闭嘴')  -> interrupt; the sentence is a command, its final text is dropped
+      - a backchannel ('嗯嗯', '对')    -> ignored, the bot goes on (a later interim may still cut in)
+      - `is_barge_in` (enough words)  -> interrupt; the sentence's final text becomes the next user turn
+    The final text of a cutting-in sentence goes straight into the pending turn and through smart turn.
+    If the bot was still thinking (had not started speaking), the user was most likely continuing the
+    turn just handed off, so that turn is put back into pending and the new sentence is merged onto it.
+    Without a streaming STT (no interim frames) it behaves like SmartTurnKeywordInterruptAggregator.
+    """
+
+    def __init__(self, min_barge_in_chars: int = 2, **kwargs):
+        super().__init__(**kwargs)
+        # fewer characters (after dropping punctuation) never cut in
+        self.min_barge_in_chars = min_barge_in_chars
+        self._last_turn: TextAudioFrame | None = None  # the turn handed to the LLM, kept with its audio
+        self._barge_in_ids: set[int] = set()            # sentences that cut in: their final text is the next turn
+        self._command_ids: set[int] = set()             # sentences that were stop commands: final text dropped
+
+    def is_barge_in(self, text: str) -> bool:
+        normalized = "".join(ch for ch in text if ch.isalnum())
+        return len(normalized) >= self.min_barge_in_chars and not is_backchannel(text)
+
+    def start_turn(self, frame: TextFrame):
+        self._last_turn = frame if isinstance(frame, TextAudioFrame) else None
+        super().start_turn(frame)
+
+    async def on_interim_text(self, frame: InterimTextFrame):
+        uid = frame.utterance_id
+        if not self.bot_busy or uid in self._barge_in_ids or uid in self._command_ids:
+            return
+        tag = f"[#{uid}]"
+        if is_stop_command(frame.text, self.stop_words):
+            self._command_ids.add(uid)
+            self.interrupt_bot(frame)
+        elif is_backchannel(frame.text):
+            self.logger.debug(f"{tag} backchannel while bot busy, ignored: {frame.text!r}")
+        elif self.is_barge_in(frame.text):
+            was_thinking = not self.bot_speaking
+            interrupted = self._last_turn
+            self.logger.info(f"{tag} ✋ BARGE-IN while bot {'thinking' if was_thinking else 'speaking'}: {frame.text!r}")
+            self._barge_in_ids.add(uid)
+            self.interrupt_bot(frame)
+            if was_thinking and interrupted is not None:
+                # the reply was never heard: treat it as the user still talking, re-open that turn
+                self.logger.info(f"[#{interrupted.utterance_id}] turn re-opened: {interrupted.text!r}")
+                self.pending_frame = interrupted
+
+    async def on_user_text(self, frame: TextFrame):
+        uid = frame.utterance_id
+        if uid in self._command_ids:
+            self._command_ids.discard(uid)
+            self.logger.info(f"[#{uid}] stop command done, text dropped: {frame.text!r}")
+        elif uid in self._barge_in_ids:
+            self._barge_in_ids.discard(uid)
+            # the bot was already cut off by this sentence: it starts the next turn, no busy/overlap checks
+            await self.accept_utterance(frame)
+        else:
+            await super().on_user_text(frame)
+
+    async def on_control(self, frame):
+        # a sentence that ended without any final text must not keep its id around
+        if isinstance(frame, UserStoppedSpeakingFrame) and frame.utterance_id is not None:
+            asyncio.get_running_loop().call_later(5.0, self._forget, frame.utterance_id)
+        await super().on_control(frame)
+
+    def _forget(self, uid: int):
+        self._barge_in_ids.discard(uid)
+        self._command_ids.discard(uid)
