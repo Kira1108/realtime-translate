@@ -1,13 +1,13 @@
 import time
 
-from app.frame import AudioFrame, TextFrame
+from app.frame import AudioFrame, TextAudioFrame
 from app.pipeline.component import PipelineComponent
 
 from .qwen3_stt import Qwen3STT
 
-
 class Qwen3STTComponent(PipelineComponent):
-    """Turns each incoming AudioFrame (one 16 kHz int16 PCM utterance) into a TextFrame."""
+    """Turns each incoming AudioFrame (one 16 kHz int16 PCM utterance) into a TextAudioFrame:
+    the recognized text plus the audio it came from. It is a TextFrame, so text-only consumers are unaffected."""
 
     def __init__(self, stt: Qwen3STT | None = None, controller=None, downstream=None):
         super().__init__(controller, downstream)
@@ -29,7 +29,14 @@ class Qwen3STTComponent(PipelineComponent):
             self.logger.warning(f"{tag} STT returned no text after {elapsed:.2f}s")
             return
         self.logger.info(f"{tag} STT {elapsed:.2f}s (audio {audio_secs:.2f}s, rtf {elapsed / audio_secs:.2f}): {text!r}")
-        self.push(TextFrame(text=text, utterance_id=frame.utterance_id, origin_ts=frame.origin_ts))
+
+        # keep the audio with the text, for components that judge the speech itself (smart turn)
+        text_audio_frame = TextAudioFrame.from_audio_and_text(frame, text)
+        
+        if text_audio_frame.sample_rate is None:
+            text_audio_frame.sample_rate = self.stt.sample_rate
+            
+        self.push(text_audio_frame)
 
     async def cleanup(self):
         await self.stt.aclose()

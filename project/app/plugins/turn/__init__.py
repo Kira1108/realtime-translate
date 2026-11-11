@@ -1,1 +1,6 @@
-from .aggregator import DropWhileBotBusyAggregator, KeywordInterruptAggregator, UserUtteranceAggregator
+from .aggregator import (
+    DropWhileBotBusyAggregator,
+    KeywordInterruptAggregator,
+    SmartTurnKeywordInterruptAggregator,
+    UserUtteranceAggregator,
+)

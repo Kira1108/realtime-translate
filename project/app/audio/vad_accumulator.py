@@ -35,6 +35,8 @@ class VADAccumulator(PipelineComponent):
         self._pre_roll_bytes = 0
         self._state = VADState.QUIET
         self._chunks: list[bytes] = []
+        # audio clock: samples received so far, so utterances can be located in the input stream
+        self._samples_seen = 0
         self._utterance_count = 0
         self._utterance_id: int | None = None   # set once speech is confirmed
         self._speech_started_at = 0.0
@@ -74,6 +76,7 @@ class VADAccumulator(PipelineComponent):
     async def handle(self, frame):
         if not isinstance(frame, AudioFrame):
             return
+        self._samples_seen += len(frame.audio_data) // 2
 
         prev = self._state
         started = time.perf_counter()
@@ -117,8 +120,13 @@ class VADAccumulator(PipelineComponent):
             f"({len(self._chunks)} chunks), wall {time.perf_counter() - self._speech_started_at:.2f}s, "
             f"VAD avg {sum(infer) / len(infer):.1f}ms max {max(infer):.1f}ms"
         )
+        # the utterance's chunks (pre-roll included) are contiguous and end with the current chunk
+        audio_end = self._samples_seen / self.sample_rate
         self.push(AudioFrame(
             audio_data=audio,
+            sample_rate=self.sample_rate,
+            audio_start=audio_end - duration,
+            audio_end=audio_end,
             utterance_id=self._utterance_id,
             origin_ts=time.time(),
         ))
