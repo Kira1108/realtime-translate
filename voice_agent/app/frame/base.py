@@ -95,3 +95,11 @@ class TextAudioFrame(TextFrame):
             utterance_id=later.utterance_id,
             origin_ts=later.origin_ts,
         )
+        
+    def to_text_frame(self) -> "TextFrame":
+        """Convert this TextAudioFrame to a plain TextFrame, dropping the audio."""
+        return TextFrame(
+            text=self.text,
+            utterance_id=self.utterance_id,
+            origin_ts=self.origin_ts,
+        )

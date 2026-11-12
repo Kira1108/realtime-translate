@@ -23,6 +23,7 @@ from typing import AsyncIterator
 import websockets
 from loguru import logger as _logger
 
+from app.audio.resampler import StreamResampler
 from app.config import get_config
 
 logger = _logger.bind(component="TencentSTT")
@@ -63,19 +64,27 @@ class TencentASRStream:
         await stream.finish()           # no more audio
         async for result in stream:     # ends after the server's final message
             ...
+
+    Audio is resampled to the engine's rate on the way out (16 kHz in, 8 kHz sent for 8k engines).
     """
 
-    def __init__(self, ws, voice_id: str):
+    def __init__(self, ws, voice_id: str, resampler: StreamResampler | None = None):
         self.ws = ws
         self.voice_id = voice_id
+        self.resampler = resampler
         self.finished = False
 
     async def send(self, pcm: bytes):
-        await self.ws.send(pcm)
+        if self.resampler is not None:
+            pcm = self.resampler.process(pcm)
+        if pcm:
+            await self.ws.send(pcm)
 
     async def finish(self):
         if not self.finished:
             self.finished = True
+            if self.resampler is not None and (tail := self.resampler.flush()):
+                await self.ws.send(tail)
             await self.ws.send(json.dumps({"type": "end"}))
 
     async def __aiter__(self) -> AsyncIterator[ASRResult]:
@@ -108,15 +117,16 @@ class TencentStreamingSTT:
     asr.cloud.tencent.com directly.
     """
 
-    sample_rate = 16000
+    sample_rate = 16000  # what callers send; see engine_sample_rate for what the service gets
 
     def __init__(
         self,
         secret_id: str = None,
         secret_key: str = None,
         appid: str = None,
-        engine: str = "16k_zh",
-        vad_silence_ms: int = 600,
+        # 8k (phone) engines ignore distant speech (a TV across the room) that 16k_zh transcribes
+        engine: str = "8k_zh",
+        vad_silence_ms: int = 240,
         word_info: int = 1,
         **extra_params,
     ):
@@ -132,13 +142,19 @@ class TencentStreamingSTT:
             "needvad": 1,                      # the service splits sentences itself
             "vad_silence_time": vad_silence_ms,  # silence that ends a sentence, 500-2000 ms
             "word_info": word_info,            # word-level timestamps in final results
-            "filter_empty_result": 0,          # always pair slice 0 with slice 2, even without text
+            "filter_empty_result": 0,   
+            # always pair slice 0 with slice 2, even without text
             **extra_params,
         }
 
     @property
     def model_id(self):
         return f"tencent-asr-{self.params['engine_model_type']}"
+
+    @property
+    def engine_sample_rate(self) -> int:
+        """The rate the engine expects: 8k engines ('8k_zh', '8k_zh_large') take 8 kHz, the rest 16 kHz."""
+        return 8000 if self.params["engine_model_type"].startswith("8k") else 16000
 
     def _signed_url(self, voice_id: str) -> str:
         now = int(time.time())
@@ -168,4 +184,7 @@ class TencentStreamingSTT:
             await ws.close()
             raise
         logger.info(f"stream {voice_id[:8]} opened in {time.perf_counter() - started:.2f}s")
-        return TencentASRStream(ws, voice_id)
+        resampler = None
+        if self.engine_sample_rate != self.sample_rate:
+            resampler = StreamResampler(self.sample_rate, self.engine_sample_rate)
+        return TencentASRStream(ws, voice_id, resampler)

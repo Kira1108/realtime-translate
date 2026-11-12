@@ -24,6 +24,7 @@ pyloudnorm==0.2.0
 # Audio / numerics
 numpy==2.0.2
 soundfile==0.12.1
+soxr==0.5.0.post1
 
 # Logging
 loguru==0.7.3

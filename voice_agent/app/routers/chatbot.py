@@ -32,7 +32,9 @@ async def chatbot_endpoint(websocket: WebSocket):
     #         VADAccumulator(),
     #         Qwen3STTComponent(),
     #         # KeywordInterruptAggregator(),
-    #         SmartTurnKeywordInterruptAggregator(),
+    #         # SmartTurnKeywordInterruptAggregator(),
+        
+    #         BargeInAggregator(),
     #         NaiveAgentComponent(),
     #         VolTTSComponent(VolTTS()),
     #         # VolTTS2Component(),

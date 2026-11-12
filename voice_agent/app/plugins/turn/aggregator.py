@@ -32,6 +32,18 @@ class UserUtteranceAggregator(PipelineComponent):
     
     start_turn: 设置bot为繁忙状态，更新新的一轮turn_id,转发用户的TextFrame给下游组件。
     注意: botstate的start turn只更新bot的状态，不会将帧转发给下游组件。但aggregator的start_turn会将帧推送给下游组件。
+    
+    Important Events from controller:
+    1. BotStartedSpeakingFrame: tts starts playing.
+    2. BotStoppedSpeakingFrame: tts finishes playing.
+    3. StopFrame: indicates the bot should stop; handled by the parent class.
+    
+    Processing Frames:
+    1. TextFrame / TextAudioFrame: represents a user's utterance; handled by `on_user_text`.
+
+    Lifecycle hooks:
+    1. on_user_text: called when a TextFrame or TextAudioFrame representing a user's utterance is received.
+    2. on_interim_user_text: called when an InterimTextFrame representing a partial transcript of the user's speech is received. 
     """
 
     control_frames = (StopFrame, BotStartedSpeakingFrame, BotStoppedSpeakingFrame)
@@ -61,12 +73,12 @@ class UserUtteranceAggregator(PipelineComponent):
         重启看门狗监测bot的轮次时长。
         将文本帧推入下游。
         """
-        self.bot.start_turn(frame.utterance_id)
-        self._watchdog.start(self.max_busy_secs, frame.utterance_id)
+        self.bot.start_turn(frame.utterance_id) # set bot busy, set turn id
+        self._watchdog.start(self.max_busy_secs, frame.utterance_id) # start the watchdog to monitor bot's turn duration
         self.logger.info(f"[#{frame.utterance_id}] user turn: {frame.text!r}")
-        # past the aggregator only the text matters: drop the user's audio here
+        # push the frame along the pipeline to the downstream components
         if isinstance(frame, TextAudioFrame):
-            frame = TextFrame(text=frame.text, utterance_id=frame.utterance_id, origin_ts=frame.origin_ts)
+            frame = frame.to_text_frame()
         self.push(frame)
 
     def interrupt_bot(self, frame: TextFrame):
@@ -75,11 +87,15 @@ class UserUtteranceAggregator(PipelineComponent):
         向controller发送一个InterruptFrame，带上当前的轮次ID
         将bot设置为空闲状态。
         """
+        
         turn_id = self.bot.turn_id
         self.logger.info(f"[#{frame.utterance_id}] interrupting reply to #{turn_id}: {frame.text!r}")
+        
+        # notify the controller that the bot has been interrupted
         if self.controller:
             self.controller.receive(InterruptFrame(utterance_id=turn_id))
-        # the interrupted reply never sends its end, so become idle here
+        
+        # set bot idle, stop watch dog (because the bot yielded control because of the interruption)
         self._set_idle()
 
     def _set_idle(self):
@@ -117,7 +133,6 @@ class UserUtteranceAggregator(PipelineComponent):
 
     def overlapped_bot(self, frame: TextFrame) -> bool:
         """True if the user spoke while the bot was busy (now, or before its last reply finished playing)."""
-        
         # bot 繁忙时说的话算重叠；bot 已经空闲，但这句话是在 bot 变为空闲之前说完的（STT 有延迟），也算重叠
         return self.bot.overlapped(frame.origin_ts)
 
@@ -135,11 +150,12 @@ class UserUtteranceAggregator(PipelineComponent):
         await self.on_user_text(frame)
 
     async def on_interim_text(self, frame: InterimTextFrame):
-        """The sentence the user is speaking right now, not final yet (streaming STT only).
+        """Called when a partial user utterance is received (InterimTextFrame, streaming STT only).
         Default: ignore; the final text arrives later through on_user_text. Override for decisions
         that cannot wait for the sentence to end, e.g. barge-in."""
 
     async def on_user_text(self, frame: TextFrame):
+        """Called when a final user utterance is received (TextFrame or TextAudioFrame)."""
         raise NotImplementedError
 
     async def cleanup(self):
@@ -150,8 +166,7 @@ class DropWhileBotBusyAggregator(UserUtteranceAggregator):
     """Strict half duplex: anything the user says while the bot is thinking or speaking is dropped."""
 
     def drop(self, frame: TextFrame):
-        """drop 只打印日志，没有向下游推送 Frame。
-        真正起到丢弃作用的是调用方没有执行 start_turn（也就没有 push）。"""
+        """Log that the frame is dropped due to bot being busy."""
         if self.bot_busy:
             reason = "bot speaking" if self.bot_speaking else "bot thinking"
         else:
@@ -159,7 +174,7 @@ class DropWhileBotBusyAggregator(UserUtteranceAggregator):
         self.logger.info(f"[#{frame.utterance_id}] dropped, {reason}: {frame.text!r}")
 
     async def on_user_text(self, frame: TextFrame):
-        """重叠说话直接drop，否则开启一个新的轮次：机器人开始处理用户输入"""
+        """handle user text frame, if bot busy, drop frame, else start a new turn"""
         if self.overlapped_bot(frame):
             self.drop(frame)
             return
@@ -168,7 +183,8 @@ class DropWhileBotBusyAggregator(UserUtteranceAggregator):
 
 class KeywordInterruptAggregator(DropWhileBotBusyAggregator):
     """Half duplex plus a spoken stop command: while the bot is busy, an utterance containing '闭嘴' interrupts it,
-    everything else is dropped. A stop command said while the bot is idle is ignored rather than sent to the LLM."""
+    everything else is dropped. A stop command said while the bot is idle is ignored rather than sent to the LLM.
+    """
 
     def __init__(self, stop_words=STOP_WORDS, **kwargs):
         super().__init__(**kwargs)
@@ -215,35 +231,41 @@ class SmartTurnKeywordInterruptAggregator(KeywordInterruptAggregator):
 
     def __init__(self, turn_wait_secs: float = 1.5, **kwargs):
         super().__init__(**kwargs)
-        # how long to wait for more speech after the model says the user has not finished
-        self.turn_wait_secs = turn_wait_secs
-        self.pending_frame: TextAudioFrame | None = None
-        # "再等等"闹钟：模型说没说完时定上，响了就把草稿交出去
-        self._wait = Alarm(self._on_wait_over)
-        # set from the VAD's start/stop events
-        self._user_speaking = False
+        
+        self.turn_wait_secs = turn_wait_secs # how long to wait for more speech after the model says the user has not finished
+        self.pending_frame: TextAudioFrame | None = None # user frames accumulated here
+        self._wait = Alarm(self._on_wait_over) # if the turntaking model says the user is not done, this alarm will trigger after turn_wait_secs
+        self._user_speaking = False # set from the VAD's start/stop events
 
     async def on_control(self, frame):
+        
         if isinstance(frame, UserStartedSpeakingFrame):
             self._user_speaking = True
-            if self._wait.armed:
-                # the user goes on: wait for this speech's text instead of timing out
-                self._cancel_wait()
+            if self._wait.armed: # the user continues during the turn-incomplete wait.
+                self._cancel_wait() # cancel the turn-incomplete wait
                 self.logger.info(f"[#{self.pending_frame.utterance_id}] ⏸️ user speaking again, wait paused")
+                
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._user_speaking = False
-            # its text normally arrives right after STT and is judged then; the restarted wait only
-            # matters if it never does (false start, empty STT result)
+            
+            # user already stopped speaking but the stt result lost, we need to trigger the turn manually after the wait.
+            # normally, when we receive a user stopped speaking event, the stt is still processing.
+            # the coresponding text frame arrive later to be judged and potentially start the turn.
+            # if there is a user stopped speaking frame, we wait for the turn_wait_secs before starting the turn
+            # if the text finally arrives, the wait will be cancelled.
+            # else the wait will eventually trigger and flush the pending frame
+            
             if self.pending_frame is not None and not self._wait.armed:
                 self._wait_then_flush()
         else:
             await super().on_control(frame)
 
     def _cancel_wait(self):
+        """Cancel the ongoing turn-incomplete wait, if any."""
         self._wait.cancel()
 
     def _flush_pending(self, reason: str):
-        """Start a turn with everything pending."""
+        """Start a turn with everything pending. (and cancel any ongoing wait)"""
         self._cancel_wait()
         pending, self.pending_frame = self.pending_frame, None
         if pending is not None:
@@ -268,7 +290,6 @@ class SmartTurnKeywordInterruptAggregator(KeywordInterruptAggregator):
         if frame.sample_rate not in (None, 16000):
             raise ValueError(f"smart turn needs 16 kHz audio, got {frame.sample_rate} Hz")
 
-        # more speech arrived: stop the countdown and judge the whole turn so far
         self._cancel_wait()
         self.pending_frame = frame if self.pending_frame is None else self.pending_frame.merge(frame)
         pending = self.pending_frame
@@ -283,6 +304,7 @@ class SmartTurnKeywordInterruptAggregator(KeywordInterruptAggregator):
             f"p={result.probability:.2f} done={result.is_done} ({pending.duration:.2f}s of audio): {pending.text!r}"
         )
 
+        # pending frame changes during turn taking model inference.
         if self.pending_frame is not pending:
             return  # flushed meanwhile (cleanup)
         if self._user_speaking:
@@ -314,31 +336,51 @@ class BargeInAggregator(SmartTurnKeywordInterruptAggregator):
     Without a streaming STT (no interim frames) it behaves like SmartTurnKeywordInterruptAggregator.
     """
 
-    def __init__(self, min_barge_in_chars: int = 2, **kwargs):
+    def __init__(self, 
+            min_barge_in_chars: int = 2, 
+            **kwargs):
+        
         super().__init__(**kwargs)
         # fewer characters (after dropping punctuation) never cut in
         self.min_barge_in_chars = min_barge_in_chars
         self._last_turn: TextAudioFrame | None = None  # the turn handed to the LLM, kept with its audio
-        self._barge_in_ids: set[int] = set()            # sentences that cut in: their final text is the next turn
-        self._command_ids: set[int] = set()             # sentences that were stop commands: final text dropped
+        self._barge_in_ids: set[int] = set()           # sentences that cut in: their final text is the next turn
+        self._command_ids: set[int] = set()            # sentences that were stop commands: final text dropped
 
     def is_barge_in(self, text: str) -> bool:
         return is_barge_in(text, self.min_barge_in_chars)
 
     def start_turn(self, frame: TextFrame):
+        # keep a record of the last turn handed to the llm with its audio (if available)
         self._last_turn = frame if isinstance(frame, TextAudioFrame) else None
         super().start_turn(frame)
 
     async def on_interim_text(self, frame: InterimTextFrame):
+        """On partial/interim text from the user."""
+        
         uid = frame.utterance_id
+        
+        # do nothing scenario: bot not busy, or already handled as command/barge-in
+        # if bot is not busy: ignore
+        # if in command ids: already handled
+        # if in barge-in ids: already handled as a barge-in
         if not self.bot_busy or uid in self._barge_in_ids or uid in self._command_ids:
             return
+        
         tag = f"[#{uid}]"
+        
+        # if it is a stop command, handle interruption immediately
         if is_stop_command(frame.text, self.stop_words):
             self._command_ids.add(uid)
             self.interrupt_bot(frame)
+            
+        # if it is a backchannel, ignore
         elif is_backchannel(frame.text):
             self.logger.debug(f"{tag} backchannel while bot busy, ignored: {frame.text!r}")
+            
+        # 1. this method call interrupt_bot method, but not start a new turn because the user is barge-ing in (not finished)
+        # 2. if the bot was thinking, the previous turn user's message not added to agent memory. we need to add the previous turn back to pending_frame.
+        # 3. if the bot was speaking, the previous turn user's message was already added to agent memory.
         elif self.is_barge_in(frame.text):
             was_thinking = not self.bot_speaking
             interrupted = self._last_turn
