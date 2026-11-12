@@ -1,5 +1,6 @@
 from fastapi import APIRouter, WebSocket
 
+from app.audio.recorder import DualChannelRecorder
 from app.audio.vad_accumulator import VADAccumulator
 from app.pipeline.pipeline import Pipeline
 from app.plugins.llm.translator import TranslatorComponent
@@ -43,7 +44,7 @@ async def chatbot_endpoint(websocket: WebSocket):
     
     
     pipeline = Pipeline(
-            WebsocketTransport(websocket),
+            WebsocketTransport(websocket, recorder=DualChannelRecorder.for_session("chatbot")),
             [
                 TencentSTTComponent(),
                 # SmartTurnKeywordInterruptAggregator(),

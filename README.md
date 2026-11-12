@@ -18,6 +18,14 @@ chatbot:
 
 整句 STT 用 Qwen3 在本机运行(Apple Silicon,MLX),流式 STT 用腾讯云实时语音识别。TTS 可以用本机的 Qwen3,也可以用火山引擎(豆包)的云端接口。LLM 走 OpenRouter,VAD 用 Silero,"用户说完没有"用 smart-turn 模型判断。各阶段是独立的组件,用 pipeline 串起来,可以任意替换。
 
+### 🎧 听一段
+
+[samples/simple.wav](./samples/simple.wav):一段 chatbot 对话的会话录音(约 1 分 38 秒,16 kHz 双声道),**左声道是用户麦克风,右声道是 bot 播放的声音**,戴耳机听左右分得最清楚。
+
+<audio controls src="./samples/simple.wav"></audio>
+
+> GitHub 页面不能直接播放 wav,点上面的链接进去下载即可。录音由 `DualChannelRecorder`(`app/audio/recorder.py`)生成,chatbot 会话默认开启,文件保存在 `output/recordings/`。
+
 ## 快速开始
 
 ```bash

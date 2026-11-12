@@ -4,6 +4,7 @@ import time
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from app.audio.recorder import DualChannelRecorder
 from app.control import SessionController
 from app.frame import (
     AudioFrame,
@@ -23,10 +24,12 @@ class TransportInput(PipelineComponent):
     def __init__(self,
             websocket: WebSocket,
             controller: SessionController | None = None,
-            downstream: PipelineComponent | None = None
+            downstream: PipelineComponent | None = None,
+            recorder: DualChannelRecorder | None = None,
         ):
         super().__init__(controller, downstream)
         self.websocket = websocket
+        self.recorder = recorder
         self._stop_event = asyncio.Event()
         self._stop_frame: StopFrame | None = None
         self._stop_originated_here = False
@@ -43,6 +46,8 @@ class TransportInput(PipelineComponent):
             self._signal_stop(frame, originated_here=False)
 
     def handle_bytes(self, data: bytes):
+        if self.recorder is not None:
+            self.recorder.add_user(data)
         self.push(AudioFrame(audio_data=data))
 
     def handle_text(self, data: str):
@@ -114,9 +119,11 @@ class TransportOutput(PipelineComponent):
             websocket: WebSocket,
             controller: SessionController | None = None,
             playback_margin_secs: float = 0.3,
+            recorder: DualChannelRecorder | None = None,
         ):
         super().__init__(controller)
         self.websocket = websocket
+        self.recorder = recorder
         # extra wait for network delay and the client's playback buffer
         self.playback_margin_secs = playback_margin_secs
         # wall-clock time at which the client is expected to finish playing everything sent so far
@@ -176,6 +183,9 @@ class TransportOutput(PipelineComponent):
             if latency is not None:
                 self.logger.info(f"{tag} reply finished, {latency:.2f}s after speech ended")
 
+        if self.recorder is not None and frame.sample_rate:
+            self.recorder.add_bot(frame.audio_data or b"", frame.sample_rate, frame.utterance_id, frame.is_end)
+
     async def output_event(self, event: dict | EventFrame):
         if isinstance(event, EventFrame):
             event = event.model_dump()
@@ -185,6 +195,8 @@ class TransportOutput(PipelineComponent):
         if isinstance(frame, AudioFrame):
             await self.output_audio(frame)
         elif isinstance(frame, (dict, EventFrame)):
+            if isinstance(frame, InterruptFrame) and self.recorder is not None:
+                self.recorder.interrupt()  # the client flushes its playback when this event reaches it
             await self.output_event(frame)
         else:
             self.logger.warning(f"Unknown data type: {type(frame)}")
@@ -207,16 +219,24 @@ class TransportOutput(PipelineComponent):
 
 
 class WebsocketTransport:
-    """Owns the session controller and both transport ends; wire the pipeline between them."""
+    """Owns the session controller and both transport ends; wire the pipeline between them.
 
-    def __init__(self, websocket: WebSocket):
+    Pass a DualChannelRecorder to record the session (user mic left, bot playback right).
+    """
+
+    def __init__(self, websocket: WebSocket, recorder: DualChannelRecorder | None = None):
         self.session_controller = SessionController()
-        self.input = TransportInput(websocket, self.session_controller)
-        self.output = TransportOutput(websocket, self.session_controller)
+        self.recorder = recorder
+        self.input = TransportInput(websocket, self.session_controller, recorder=recorder)
+        self.output = TransportOutput(websocket, self.session_controller, recorder=recorder)
 
     async def run(self):
-        await asyncio.gather(
-            self.input.run(),
-            self.output.run(),
-            self.session_controller.run(),
-        )
+        try:
+            await asyncio.gather(
+                self.input.run(),
+                self.output.run(),
+                self.session_controller.run(),
+            )
+        finally:
+            if self.recorder is not None:
+                self.recorder.close()
