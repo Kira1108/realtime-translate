@@ -79,8 +79,8 @@ coverage.xml
 reports/
 
 # Model weights
-project/models/stt/
-project/models/tts/
+voice_agent/models/stt/
+voice_agent/models/tts/
 
 # Node (if present)
 node_modules/
