@@ -5,8 +5,8 @@ from pydantic_ai import Agent
 from app.frame import InterruptFrame, StopFrame, TextFrame, TextStreamFrame
 from app.pipeline.component import PipelineComponent
 
-# from .openrouter import create_pydantic_ai_model
-from .local_llm import create_pydantic_ai_model
+from .openrouter import create_pydantic_ai_model
+# from .local_llm import create_pydantic_ai_model
 
 SYSTEM_PROMPT = (
     "You are Vivian, a smart AI assistant. "

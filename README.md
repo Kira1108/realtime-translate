@@ -250,6 +250,16 @@ python scripts/chatbot_mic.py --list-devices
 
 **测 chatbot 请戴耳机。** 外放时麦克风会录到 bot 自己的声音,被识别成文字后,超过 2 个字就会打断它自己(还没有做回声过滤)。
 
+### WebRTC 页面
+
+不想装 PyAudio、或者想外放测试,直接用浏览器:启动服务后打开 `http://localhost:8000/webrtc`,点"开始通话"。
+
+- 走 WebRTC(`app/transport/webrtc.py`),pipeline 和 `/websocket/chatbot` 一样,只换了 transport。信令是 `POST /webrtc/chatbot/offer`。
+- 浏览器自带回声消除和降噪(页面上可以开关),外放也不容易打断自己。
+- 回复由服务端按 20 ms 一帧实时播出,所以 bot 开始 / 结束说话是精确的,不靠估算;打断时服务端直接清空没播的音频。
+- 页面上是一条实时双轨时间线:上面是你,下面是助手,开口、停口、打断都标在上面。每次通话也会录到 `output/recordings/chatbot_webrtc_*.wav`。
+- 麦克风只能在 `localhost` 或 https 下用。默认不配 STUN(本机 / 局域网够用);要过公网,在 `app/routers/webrtc.py` 的 `ICE_SERVERS` 和页面里都加上。
+
 ## 测试
 
 ```bash
@@ -410,8 +420,9 @@ Pipeline(WebsocketTransport(websocket), [
 
 ```
 project/app/
-  transport/    WebSocket 收发;估算客户端播放进度,发出 bot 开始 / 结束说话事件
-  audio/        VAD(Silero)切句、smart-turn 说完检测(smart_turn.py)
+  transport/    WebSocket 收发(ws.py,估算客户端播放进度);WebRTC 收发(webrtc.py,服务端实时播出);都发出 bot 开始 / 结束说话事件
+  static/       WebRTC 测试页面(webrtc.html)
+  audio/        VAD(Silero)切句、smart-turn 说完检测(smart_turn.py)、soxr 重采样(resampler.py)、双声道录音(recorder.py)
   plugins/
     stt/        整句 STT(Qwen3)、流式 STT(腾讯:tencent_stt.py 协议 + TencentSTTComponent)
     llm/        翻译(translator)、对话(naive_agent)

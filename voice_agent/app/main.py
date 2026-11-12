@@ -10,6 +10,7 @@ from app.routers import test
 from app.routers import voice_changer
 from app.routers import translator
 from app.routers import chatbot
+from app.routers import webrtc
 
 def swagger_monkey_patch(*args, **kwargs):
     return get_swagger_ui_html(
@@ -36,3 +37,4 @@ app.include_router(test.router)
 app.include_router(voice_changer.router)
 app.include_router(translator.router)
 app.include_router(chatbot.router)
+app.include_router(webrtc.router)

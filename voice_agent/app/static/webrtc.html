@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>语音助手 · WebRTC</title>
+<style>
+  :root {
+    --fog: #e4e8ee;
+    --panel: #f4f6f9;
+    --ink: #172033;
+    --muted: #6b778c;
+    --rule: #cdd3dc;
+    --user: #2e55d0;   /* left channel: you */
+    --bot: #0e8a6e;    /* right channel: the assistant */
+    --flare: #d9481c;  /* interrupts and errors */
+    --sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--fog); color: var(--ink); font: 15px/1.6 var(--sans); }
+  main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 48px; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: .02em; }
+  h1 small { font: 500 13px var(--mono); color: var(--muted); letter-spacing: .08em; margin-left: 10px; }
+  .status { font: 500 13px var(--mono); color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--rule); }
+  .status[data-state="live"] { color: var(--ink); }
+  .status[data-state="live"]::before { background: var(--bot); box-shadow: 0 0 0 4px rgb(14 138 110 / .15); }
+  .status[data-state="connecting"]::before { background: var(--user); }
+  .status[data-state="error"] { color: var(--flare); }
+  .status[data-state="error"]::before { background: var(--flare); }
+
+  /* the two-track timeline: left channel above, right channel below, newest on the right */
+  .deck { margin-top: 24px; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; overflow: hidden; }
+  .lane { display: grid; grid-template-columns: 132px 1fr; align-items: stretch; }
+  .lane + .lane { border-top: 1px dashed var(--rule); }
+  .lane-label { padding: 14px 16px; border-right: 1px solid var(--rule); display: flex; flex-direction: column; justify-content: center; }
+  .lane-label b { font-size: 17px; font-weight: 600; }
+  .lane-label span { font: 11px var(--mono); color: var(--muted); letter-spacing: .04em; }
+  .lane-label i { font: normal 500 11px var(--mono); margin-top: 6px; height: 16px; letter-spacing: .04em; }
+  .lane[data-lane="user"] .lane-label b, .lane[data-lane="user"] .lane-label i { color: var(--user); }
+  .lane[data-lane="bot"] .lane-label b, .lane[data-lane="bot"] .lane-label i { color: var(--bot); }
+  canvas { display: block; width: 100%; height: 96px; }
+  .ruler { display: grid; grid-template-columns: 132px 1fr; border-top: 1px solid var(--rule); font: 11px var(--mono); color: var(--muted); }
+  .ruler div:last-child { display: flex; justify-content: space-between; padding: 4px 8px; }
+
+  .controls { margin-top: 20px; display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  button { font: 600 16px var(--sans); color: #fff; background: var(--ink); border: 0; border-radius: 999px; padding: 12px 28px; cursor: pointer; min-width: 132px; }
+  button[data-live="true"] { background: var(--flare); }
+  button:disabled { opacity: .5; cursor: progress; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--user); outline-offset: 3px; }
+  fieldset { border: 0; margin: 0; padding: 0; display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+  fieldset:disabled { opacity: .55; }
+  legend { float: left; margin-right: 4px; font: 11px var(--mono); letter-spacing: .06em; padding-top: 2px; }
+  label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  input[type="checkbox"] { accent-color: var(--ink); }
+
+  .log { margin-top: 28px; }
+  .log h2 { font: 600 13px var(--mono); letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+  ol { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--rule); max-height: 320px; overflow: auto; font: 13px/1.5 var(--mono); }
+  li { display: grid; grid-template-columns: 96px 1fr; gap: 12px; padding: 6px 2px; border-bottom: 1px solid var(--rule); }
+  li time { color: var(--muted); }
+  li[data-kind="user"] span { color: var(--user); }
+  li[data-kind="bot"] span { color: var(--bot); }
+  li[data-kind="interrupt"] span, li[data-kind="error"] span { color: var(--flare); font-weight: 600; }
+  li.empty { display: block; color: var(--muted); font-family: var(--sans); padding: 14px 2px; }
+
+  @media (max-width: 640px) {
+    main { padding: 20px 14px 32px; }
+    .lane, .ruler { grid-template-columns: 84px 1fr; }
+    .lane-label { padding: 10px; }
+    .lane-label span { display: none; }
+    li { grid-template-columns: 72px 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>语音助手<small>WEBRTC · CHATBOT</small></h1>
+    <div class="status" id="status" data-state="idle" role="status">未连接</div>
+  </header>
+
+  <section class="deck" aria-label="实时双轨时间线">
+    <div class="lane" data-lane="user">
+      <div class="lane-label"><b>你</b><span>麦克风 · 左声道</span><i id="user-state"></i></div>
+      <canvas id="user-track" aria-hidden="true"></canvas>
+    </div>
+    <div class="lane" data-lane="bot">
+      <div class="lane-label"><b>助手</b><span>播放 · 右声道</span><i id="bot-state"></i></div>
+      <canvas id="bot-track" aria-hidden="true"></canvas>
+    </div>
+    <div class="ruler"><div></div><div><span>−10s</span><span>−5s</span><span>现在</span></div></div>
+  </section>
+
+  <div class="controls">
+    <button id="call" type="button">开始通话</button>
+    <fieldset id="mic-options">
+      <legend>浏览器麦克风处理</legend>
+      <label><input type="checkbox" id="opt-aec" checked>回声消除</label>
+      <label><input type="checkbox" id="opt-ns" checked>降噪</label>
+      <label><input type="checkbox" id="opt-agc">自动增益</label>
+    </fieldset>
+  </div>
+
+  <section class="log">
+    <h2>事件</h2>
+    <ol id="log"><li class="empty">开始通话后，你开口、停口，助手开始说、说完、被打断，都会记在这里，也会标在上面的时间线上。</li></ol>
+  </section>
+
+  <audio id="remote" autoplay></audio>
+</main>
+
+<script>
+const WINDOW_MS = 10000;
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const COLORS = { user: css("--user"), bot: css("--bot"), flare: css("--flare"), rule: css("--rule") };
+const MONO = css("--mono");
+
+let pc = null, channel = null, micStream = null, audioCtx = null, startedAt = 0, timer = null;
+const meters = { user: null, bot: null };   // AnalyserNodes
+const levels = { user: [], bot: [] };       // [{t, v}]
+const marks = [];                           // [{t, lane, kind, label}]
+
+function setStatus(state, text) { const el = $("status"); el.dataset.state = state; el.textContent = text; }
+function laneState(lane, text) { $(`${lane}-state`).textContent = text; }
+
+function log(kind, text) {
+  const list = $("log");
+  list.querySelector(".empty")?.remove();
+  const li = document.createElement("li");
+  li.dataset.kind = kind;
+  const time = document.createElement("time");
+  time.textContent = startedAt ? `+${((performance.now() - startedAt) / 1000).toFixed(2)}s` : "";
+  const span = document.createElement("span");
+  span.textContent = text;
+  li.append(time, span);
+  list.prepend(li);
+}
+
+function mark(lane, kind, label) { marks.push({ t: performance.now(), lane, kind, label }); }
+
+const EVENTS = {
+  user_started_speaking: (e) => { laneState("user", "说话中"); mark("user", "start"); log("user", `你开口了 #${e.utterance_id}`); },
+  user_stopped_speaking: (e) => { laneState("user", ""); mark("user", "stop"); log("user", `你停口了 #${e.utterance_id}`); },
+  bot_started_speaking: (e) => { laneState("bot", "说话中"); mark("bot", "start"); log("bot", `助手开始说，回答 #${e.utterance_id}`); },
+  bot_stopped_speaking: () => { laneState("bot", ""); mark("bot", "stop"); },
+  reply_end: (e) => log("bot", `助手说完了，回答 #${e.utterance_id}`),
+  interrupt: (e) => { laneState("bot", ""); mark("both", "interrupt", "打断"); log("interrupt", `打断了助手对 #${e.utterance_id} 的回答`); },
+  stop: () => { log("bot", "服务端结束了通话"); hangUp(false); },
+};
+
+function meter(stream) {
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  audioCtx.createMediaStreamSource(stream).connect(analyser);
+  return analyser;
+}
+
+function rms(analyser) {
+  const buf = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(buf);
+  let sum = 0;
+  for (const x of buf) sum += x * x;
+  return Math.min(1, Math.sqrt(sum / buf.length) * 4);
+}
+
+function draw(now) {
+  for (const lane of ["user", "bot"]) {
+    const canvas = $(`${lane}-track`);
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+    const ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    if (meters[lane]) levels[lane].push({ t: now, v: rms(meters[lane]) });
+    while (levels[lane].length && levels[lane][0].t < now - WINDOW_MS) levels[lane].shift();
+
+    const x = (t) => w - ((now - t) / WINDOW_MS) * w;
+    ctx.strokeStyle = COLORS.rule;
+    ctx.beginPath(); ctx.moveTo(0, h / 2); ctx.lineTo(w, h / 2); ctx.stroke();
+
+    ctx.fillStyle = COLORS[lane];
+    for (const { t, v } of levels[lane]) {
+      const barH = Math.max(1, v * (h - 12));
+      ctx.fillRect(x(t), (h - barH) / 2, 2, barH);
+    }
+
+    for (const m of marks) {
+      if (m.t < now - WINDOW_MS || (m.lane !== lane && m.lane !== "both")) continue;
+      const mx = Math.round(x(m.t)) + 0.5;
+      if (m.kind === "interrupt") {
+        ctx.strokeStyle = COLORS.flare; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(mx, 0); ctx.lineTo(mx, h); ctx.stroke(); ctx.lineWidth = 1;
+        if (lane === "user") { ctx.fillStyle = COLORS.flare; ctx.font = `600 11px ${MONO}`; ctx.fillText(m.label, mx + 4, 13); }
+      } else {
+        ctx.strokeStyle = COLORS[lane];
+        ctx.setLineDash(m.kind === "stop" ? [3, 3] : []);
+        ctx.beginPath(); ctx.moveTo(mx, 4); ctx.lineTo(mx, h - 4); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+  }
+  while (marks.length && marks[0].t < now - WINDOW_MS) marks.shift();
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+function waitForIce(peer) {
+  if (peer.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => { if (peer.iceGatheringState === "complete") { peer.removeEventListener("icegatheringstatechange", done); resolve(); } };
+    peer.addEventListener("icegatheringstatechange", done);
+    setTimeout(resolve, 2000);  // host candidates are enough on a local network
+  });
+}
+
+async function call() {
+  const button = $("call");
+  button.disabled = true;
+  setStatus("connecting", "连接中…");
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: $("opt-aec").checked,
+        noiseSuppression: $("opt-ns").checked,
+        autoGainControl: $("opt-agc").checked,
+      },
+    });
+  } catch (err) {
+    setStatus("error", "没有麦克风权限");
+    log("error", `拿不到麦克风（${err.name}）：在地址栏左侧允许使用麦克风，再点开始通话。页面需要用 localhost 或 https 打开。`);
+    button.disabled = false;
+    return;
+  }
+
+  audioCtx = new AudioContext();
+  meters.user = meter(micStream);
+
+  pc = new RTCPeerConnection();
+  micStream.getTracks().forEach((track) => pc.addTrack(track, micStream));
+  pc.ontrack = (e) => {
+    const stream = e.streams[0] || new MediaStream([e.track]);
+    $("remote").srcObject = stream;
+    meters.bot = meter(stream);
+  };
+  pc.onconnectionstatechange = () => {
+    if (pc?.connectionState === "connected") {
+      startedAt = performance.now();
+      setStatus("live", "通话中 0:00");
+      timer = setInterval(() => {
+        const s = Math.floor((performance.now() - startedAt) / 1000);
+        setStatus("live", `通话中 ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`);
+      }, 1000);
+      log("user", "已接通，可以说话了");
+    } else if (pc && ["failed", "disconnected"].includes(pc.connectionState)) {
+      setStatus("error", "连接断开");
+      log("error", `连接断开（${pc.connectionState}）。如果开着代理的 TUN 模式，先关掉再试。`);
+      hangUp(false);
+    }
+  };
+
+  channel = pc.createDataChannel("events");
+  channel.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+    (EVENTS[event.event_type] || ((ev) => log("bot", ev.event_type)))(event);
+  };
+
+  try {
+    await pc.setLocalDescription(await pc.createOffer());
+    await waitForIce(pc);
+    const res = await fetch(`${location.pathname.replace(/\/$/, "")}/chatbot/offer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+    });
+    if (!res.ok) throw new Error(`服务端返回 ${res.status}：${await res.text()}`);
+    await pc.setRemoteDescription(await res.json());
+  } catch (err) {
+    setStatus("error", "连接失败");
+    log("error", `连接失败：${err.message}`);
+    hangUp(false);
+    return;
+  }
+
+  button.textContent = "挂断";
+  button.dataset.live = "true";
+  button.disabled = false;
+  $("mic-options").disabled = true;
+}
+
+function hangUp(tellServer = true) {
+  if (tellServer && channel?.readyState === "open") channel.send(JSON.stringify({ event_type: "stop" }));
+  clearInterval(timer);
+  pc?.close(); pc = null; channel = null;
+  micStream?.getTracks().forEach((t) => t.stop()); micStream = null;
+  audioCtx?.close(); audioCtx = null;
+  meters.user = meters.bot = null;
+  laneState("user", ""); laneState("bot", "");
+  if ($("status").dataset.state !== "error") setStatus("idle", startedAt ? "已挂断" : "未连接");
+  startedAt = 0;
+  const button = $("call");
+  button.textContent = "开始通话";
+  button.dataset.live = "false";
+  button.disabled = false;
+  $("mic-options").disabled = false;
+}
+
+$("call").addEventListener("click", () => (pc ? hangUp() : call()));
+</script>
+</body>
+</html>
