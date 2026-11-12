@@ -43,8 +43,6 @@ class InterruptFrame(EventFrame):
     utterance_id: Optional[int] = Field(default=None, description="utterance whose reply is being interrupted")
 
 
-
-
 class UserStartedSpeakingFrame(EventFrame):
     """Broadcast by the VAD as soon as it hears possible speech (before it is confirmed).
     Its text arrives later, after STT; may be followed by a stop without any text (false start)."""

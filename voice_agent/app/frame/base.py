@@ -17,9 +17,11 @@ class AudioFrame(Frame):
     audio_start: float | None = None
     audio_end: float | None = None
 
+
 class TextFrame(Frame):
     text: str
     
+
 class TextStreamFrame(TextFrame):
     is_first:bool = False
     is_end:bool = False
