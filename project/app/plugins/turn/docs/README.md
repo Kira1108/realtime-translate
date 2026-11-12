@@ -13,12 +13,14 @@ STT ──TextAudioFrame──▶ aggregator ──TextFrame──▶ LLM ──
 
 ## 主持人脑子里记着什么
 
+都放在一个小本子 `BotState`（`bot_state.py`，纯数据）里，aggregator 用 `self.bot` 访问：
+
 | 状态 | 意思 |
 |---|---|
-| `bot_busy` | bot 是不是在忙：从把话交给 LLM 那一刻起，到客户端把回复**播完**为止 |
-| `bot_speaking` | bot 是不是已经开口了（忙的时候分两段：先"思考"，再"说话"） |
-| `_turn_id` | bot 正在回答的是第几句话 |
-| `_bot_idle_since` | bot 上一次闲下来的时间，用来判断一句话是不是"抢话" |
+| `bot.busy` | bot 是不是在忙：从把话交给 LLM 那一刻起，到客户端把回复**播完**为止（也可以用 `aggregator.bot_busy`） |
+| `bot.speaking` | bot 是不是已经开口了（忙的时候分两段：先"思考"，再"说话"） |
+| `bot.turn_id` | bot 正在回答的是第几句话；bot 发来的事件不属于这一轮就不理（`bot.is_current()`） |
+| `bot.idle_since` | bot 上一次闲下来的时间，用来判断一句话是不是"抢话"（`bot.overlapped()`） |
 
 ## 场景一：一句一回（`DropWhileBotBusyAggregator` / `KeywordInterruptAggregator`）
 
@@ -55,17 +57,19 @@ VAD 很急性子：用户停顿 0.2 秒就切一句。于是"我想问一下…�
 
 整个 aggregator 里只有两个闹钟，理解了它们，就理解了所有的取消逻辑。
 
+两个闹钟都是同一个小工具 `Alarm`（`alarm.py`）：`start(秒数)` 定上（再定一次会替换掉旧的），`cancel()` 按掉，`armed` 看它是不是在走，响了就调用一次回调。
+
 ### 🐕 看门狗：一个"保险长闹钟"（`_watchdog`，默认 120 秒）
 
 每次 `start_turn` 时定上。它的意思是：
 
 > "bot 这一轮最多忙 120 秒。到点了还没人告诉我它闲下来了，我就当它闲了。"
 
-正常情况下 bot 早就播完了，`BotStoppedSpeaking` 一来，主持人就**按掉**这个闹钟（`_set_idle` 里 `cancel`）。它只在出事的时候响：比如 TTS 崩了、结束帧丢了。没有它的话，bot 会永远"忙"下去，再也不理用户。
+正常情况下 bot 早就播完了，`BotStoppedSpeaking` 一来，主持人就**按掉**这个闹钟（`_set_idle` 里 `self._watchdog.cancel()`）。它只在出事的时候响：比如 TTS 崩了、结束帧丢了。没有它的话，bot 会永远"忙"下去，再也不理用户。
 
 闹钟响的时候还会核对一下：现在忙的还是**定闹钟时的那一轮**吗？如果已经换了一轮，这个旧闹钟响了也不算数。
 
-### ⏳ "再等等"闹钟：一个短闹钟（`_wait_task`，默认 1.5 秒）
+### ⏳ "再等等"闹钟：一个短闹钟（`_wait`，默认 1.5 秒）
 
 模型说"还没说完"时定上。它的意思是：
 
@@ -119,6 +123,18 @@ UserUtteranceAggregator             状态 + 看门狗 + start_turn / interrupt_
     └── KeywordInterruptAggregator  + "闭嘴"打断；把"接受一句话"留成钩子 accept_utterance
         └── SmartTurnKeywordInterruptAggregator
                                     + 草稿本、smart turn 模型、"再等等"闹钟、监听 VAD 开口/停口
+            └── BargeInAggregator   + 看中间结果插话打断、过滤附和、思考阶段被打断时重新打开上一轮
 ```
 
-想换一种轮次策略，就继承合适的那一层，重写 `on_user_text` 或 `accept_utterance`。
+想换一种轮次策略，就继承合适的那一层，重写 `on_user_text`、`accept_utterance` 或 `on_interim_text`。
+
+## 文件
+
+| 文件 | 内容 |
+|---|---|
+| `aggregator.py` | 上面这几个类 |
+| `bot_state.py` | `BotState`：bot 的状态，纯数据 |
+| `alarm.py` | `Alarm`：一次性闹钟，看门狗和"再等等"共用 |
+| `rules.py` | 纯文字规则：`is_stop_command`、`is_backchannel`、`is_barge_in`，以及停止词、附和字表 |
+
+测试在 `project/tests/test_turn.py`（各个场景）和 `test_turn_parts.py`（上面这几个小零件），运行：`cd project && python -m pytest`。

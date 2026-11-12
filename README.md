@@ -2,6 +2,8 @@
 
 实时语音服务,目前有三个接口:
 
+> 你不要以为这是抄袭pipecat或者livekit，不是的，仔细看，细节都不一样的，这是我的版本。
+
 - **实时翻译**:说中文,实时听到英文。
 - **变声**:说中文,听到另一个声音说的中文。
 - **语音助手(chatbot)**:和 LLM 语音对话。会等你把话说完再回答(smart turn),bot 说话时可以直接插话打断它(barge-in),说"闭嘴"立刻停。
@@ -240,6 +242,13 @@ python scripts/chatbot_mic.py --list-devices
 
 **测 chatbot 请戴耳机。** 外放时麦克风会录到 bot 自己的声音,被识别成文字后,超过 2 个字就会打断它自己(还没有做回声过滤)。
 
+## 测试
+
+```bash
+cd project
+python -m pytest          # 轮次管理的各个场景 + 小零件,约 1 秒,不需要模型和网络
+```
+
 ## 日志
 
 用 loguru。`LOG_LEVEL=DEBUG uvicorn app.main:app` 看更多细节(包括 STT 的每个中间结果),`TRACE` 会打印每个 VAD 块。每句话的日志带 `[#n]` 编号,包含:
@@ -409,6 +418,7 @@ project/scripts/
   voice_changer_client.py   发送 wav 文件的测试客户端
   voice_changer_mic.py      麦克风客户端(translator / voice_changer)
   chatbot_mic.py            麦克风客户端(chatbot,支持打断)
+project/tests/              测试(python -m pytest)
 ```
 
 ## 已知问题
