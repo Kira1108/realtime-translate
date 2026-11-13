@@ -1,5 +1,6 @@
 """Voice cloning endpoints (Volcengine / Doubao), on top of app/plugins/voice_clone/seed.py.
 
+    GET  /voice_clone          the page: record in the browser or upload a file, then clone
     POST /voice_clone          upload a voice sample (multipart form) and train a voice
     GET  /voice_clone/status   query a voice's status and demo audio
 
@@ -11,6 +12,7 @@ Example:
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from app.plugins.voice_clone.seed import (
@@ -25,6 +27,13 @@ router = APIRouter(
     prefix="/voice_clone",
     tags=["voice_clone"],
 )
+
+PAGE = Path(__file__).resolve().parent.parent / "static" / "voice_clone.html"
+
+
+@router.get("", response_class=HTMLResponse)
+async def page():
+    return PAGE.read_text(encoding="utf-8")  # read per request, so edits show up on reload
 
 
 class VoiceCloneResult(BaseModel):

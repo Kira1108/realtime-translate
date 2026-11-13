@@ -27,7 +27,8 @@ class VolTTS:
         self,
         api_key: str = None,
         speaker: str = "zh_female_tianmeitaozi_mars_bigtts",#"zh_male_M392_conversation_wvae_bigtts",
-        resource_id: str = "seed-tts-1.0",
+        # None: picked from the speaker, "seed-icl-2.0" for cloned voices ("S_..."), else "seed-tts-1.0"
+        resource_id: str | None = None,
         sample_rate: int = 24000,
         uid: str = "realtime-translate",
         timeout: float = 60.0,
@@ -37,7 +38,7 @@ class VolTTS:
         if not self.api_key:
             raise RuntimeError("缺少火山 TTS API Key，请设置环境变量 VOLC_TTS_API_KEY")
         self.speaker = speaker
-        self.resource_id = resource_id
+        self.resource_id = resource_id or ("seed-icl-2.0" if speaker.startswith("S_") else "seed-tts-1.0")
         self._sample_rate = sample_rate
         self.uid = uid
         self.min_chunk_secs = min_chunk_secs
