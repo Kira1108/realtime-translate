@@ -14,6 +14,7 @@ from app.frame import (
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
+from app.metrics.latency import mark
 from app.pipeline.component import PipelineComponent
 
 from .alarm import Alarm
@@ -75,6 +76,7 @@ class UserUtteranceAggregator(PipelineComponent):
         """
         self.bot.start_turn(frame.utterance_id) # set bot busy, set turn id
         self._watchdog.start(self.max_busy_secs, frame.utterance_id) # start the watchdog to monitor bot's turn duration
+        mark(self.controller, frame.utterance_id, "turn_start")
         self.logger.info(f"[#{frame.utterance_id}] user turn: {frame.text!r}")
         # push the frame along the pipeline to the downstream components
         if isinstance(frame, TextAudioFrame):

@@ -2,6 +2,7 @@ import time
 from collections import deque
 
 from app.frame import AudioFrame, UserStartedSpeakingFrame, UserStoppedSpeakingFrame
+from app.metrics.latency import mark
 from app.pipeline.component import PipelineComponent
 
 from .silero_vad import SileroVADAnalyzer
@@ -131,13 +132,17 @@ class VADAccumulator(PipelineComponent):
         )
         # the utterance's chunks (pre-roll included) are contiguous and end with the current chunk
         audio_end = self._samples_seen / self.sample_rate
+        now = time.time()
+        # the speech itself ended stop_secs ago: that is how long the VAD waits to call it over
+        mark(self.controller, self._utterance_id, "speech_end", ts=now - self.analyzer.params.stop_secs)
+        mark(self.controller, self._utterance_id, "vad_end", ts=now)
         self.push(AudioFrame(
             audio_data=audio,
             sample_rate=self.sample_rate,
             audio_start=audio_end - duration,
             audio_end=audio_end,
             utterance_id=self._utterance_id,
-            origin_ts=time.time(),
+            origin_ts=now,
         ))
 
     async def cleanup(self):

@@ -4,6 +4,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
 from app.frame import InterruptFrame, StopFrame, TextFrame, TextStreamFrame
+from app.metrics.latency import mark
 from app.pipeline.component import PipelineComponent
 
 from .openrouter import create_pydantic_ai_model as open_router_model
@@ -80,6 +81,7 @@ class NaiveAgentComponent(PipelineComponent):
             is_end: bool = False
         ):
         if is_first:
+            mark(self.controller, frame.utterance_id, "llm_first")
             self.logger.info(f"{tag} LLM +{time.perf_counter() - started:.2f}s: {text!r}")
         
         self.push(TextStreamFrame(

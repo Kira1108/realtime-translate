@@ -4,6 +4,7 @@ import time
 import numpy as np
 
 from app.frame import AudioFrame, InterruptFrame, StopFrame, TextFrame
+from app.metrics.latency import mark
 from app.pipeline.component import PipelineComponent
 
 from .qwen3_tts import Qwen3TTS
@@ -61,6 +62,7 @@ class Qwen3TTSComponent(PipelineComponent):
         first_pending = is_first
         async for chunk in self.tts.synthesize_stream(text):
             if samples == 0:
+                mark(self.controller, frame.utterance_id, "tts_first")
                 self.logger.info(f"{tag} TTS first chunk {time.perf_counter() - started:.2f}s")
             samples += len(chunk)
             self.push(AudioFrame(
@@ -149,6 +151,7 @@ class VolTTS2Component(PipelineComponent):
         try:
             async for chunk in reply.session:
                 if reply.samples == 0:
+                    mark(self.controller, reply.utterance_id, "tts_first")
                     self.logger.info(f"{tag} TTS first chunk {time.perf_counter() - reply.started:.2f}s")
                 reply.samples += len(chunk)
                 self._push_audio(reply, Qwen3TTSComponent._to_pcm16(chunk))

@@ -8,6 +8,7 @@ from app.frame import (
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
+from app.metrics.latency import mark
 from app.pipeline.component import PipelineComponent
 
 from .qwen3_stt import Qwen3STT
@@ -36,6 +37,7 @@ class Qwen3STTComponent(PipelineComponent):
         if not text:
             self.logger.warning(f"{tag} STT returned no text after {elapsed:.2f}s")
             return
+        mark(self.controller, frame.utterance_id, "stt_final")
         self.logger.info(f"{tag} STT {elapsed:.2f}s (audio {audio_secs:.2f}s, rtf {elapsed / audio_secs:.2f}): {text!r}")
 
         # keep the audio with the text, for components that judge the speech itself (smart turn)
@@ -174,6 +176,8 @@ class TencentSTTComponent(PipelineComponent):
         if text:
             # wall-clock time the speech ended: the audio clock runs in real time
             origin_ts = time.time() - (self._samples_seen - end) / self.sample_rate
+            mark(self.controller, utterance_id, "speech_end", ts=origin_ts)
+            mark(self.controller, utterance_id, "stt_final")
             self.logger.info(
                 f"[#{utterance_id}] STT final [{audio_start:.2f}s, {audio_end:.2f}s], "
                 f"{time.time() - origin_ts:.2f}s after speech ended: {text!r}"

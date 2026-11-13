@@ -71,6 +71,18 @@
   li[data-kind="interrupt"] span, li[data-kind="error"] span { color: var(--flare); font-weight: 600; }
   li.empty { display: block; color: var(--muted); font-family: var(--sans); padding: 14px 2px; }
 
+  /* per-turn latency: speech end → first audio, split by pipeline stage */
+  .header-right { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+  .latency-chip { font: 500 13px var(--mono); color: var(--muted); }
+  .latency-chip b { color: var(--ink); font-weight: 600; }
+  .lat { display: flex; flex-direction: column; gap: 5px; }
+  .lat-bar { width: min(100%, 480px); height: 8px; border-radius: 4px; background: #e9ecf1; overflow: hidden; }
+  .lat-fill { display: flex; height: 100%; max-width: 100%; }
+  .lat-fill i { display: block; height: 100%; }
+  .lat-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: var(--muted); }
+  .lat-legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; background: var(--c); }
+  li[data-kind="latency"] .lat-total { color: var(--ink); font-weight: 600; }
+
   @media (max-width: 640px) {
     main { padding: 20px 14px 32px; }
     .lane, .ruler { grid-template-columns: 84px 1fr; }
@@ -84,7 +96,10 @@
 <main>
   <header>
     <h1><span id="title">语音助手</span><small id="subtitle">WEBRTC · CHATBOT</small></h1>
-    <div class="status" id="status" data-state="idle" role="status">未连接</div>
+    <div class="header-right">
+      <div class="latency-chip" id="latency-chip" title="你说完到听到第一个字，服务端测得" hidden></div>
+      <div class="status" id="status" data-state="idle" role="status">未连接</div>
+    </div>
   </header>
 
   <section class="deck" aria-label="实时双轨时间线">
@@ -182,7 +197,63 @@ const EVENTS = {
   reply_end: (e) => log("bot", `${mode().bot}播完了，${mode().reply} #${e.utterance_id}`),
   interrupt: (e) => { laneState("bot", ""); mark("both", "interrupt", "打断"); log("interrupt", `打断了对 #${e.utterance_id} 的${mode().reply}`); },
   stop: () => { log("bot", "服务端结束了通话"); hangUp(false); },
+  latency: (e) => showLatency(e),
 };
+
+/* ---------- latency: speech end → first audio ---------- */
+const STAGE_COLORS = { VAD: "#d0c4ae", STT: COLORS.user, turn: "#b7791f", LLM: "#172033", TTS: COLORS.bot, out: "#8f99ab" };
+const STAGE_LABELS = { VAD: "VAD 静音等待", STT: "识别", turn: "轮次判断", LLM: "大模型首句", TTS: "合成首包", out: "播出" };
+const BAR_SCALE_SECS = 3;  // a full bar: every turn on the same scale, so they compare at a glance
+let latencyTotals = [];
+
+function median(values) {
+  const v = [...values].sort((a, b) => a - b), m = Math.floor(v.length / 2);
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
+function showLatency(e) {
+  latencyTotals.push(e.total);
+  const chip = $("latency-chip");
+  chip.hidden = false;
+  chip.innerHTML = "";
+  chip.append("首音延迟 ", Object.assign(document.createElement("b"), { textContent: `${e.total.toFixed(2)}s` }),
+    ` · 中位 ${median(latencyTotals).toFixed(2)}s（${latencyTotals.length} 轮）`);
+
+  const list = $("log");
+  list.querySelector(".empty")?.remove();
+  const li = document.createElement("li");
+  li.dataset.kind = "latency";
+  const time = document.createElement("time");
+  time.textContent = startedAt ? `+${((performance.now() - startedAt) / 1000).toFixed(2)}s` : "";
+  const body = document.createElement("div");
+  body.className = "lat";
+  const head = document.createElement("div");
+  head.append(`#${e.utterance_id} 说完 → 听到第一个字 `, Object.assign(document.createElement("span"), { className: "lat-total", textContent: `${e.total.toFixed(2)}s` }));
+  const bar = document.createElement("div");
+  bar.className = "lat-bar";
+  bar.title = `满格 ${BAR_SCALE_SECS}s`;
+  const fill = document.createElement("div");
+  fill.className = "lat-fill";
+  fill.style.width = `${Math.min(100, (e.total / BAR_SCALE_SECS) * 100)}%`;
+  bar.append(fill);
+  const legend = document.createElement("div");
+  legend.className = "lat-legend";
+  for (const [name, secs] of e.stages) {
+    const color = STAGE_COLORS[name] || "#999";
+    const seg = document.createElement("i");
+    seg.style.flex = `${Math.max(secs, 0)} 0 0`;
+    seg.style.background = color;
+    seg.title = `${STAGE_LABELS[name] || name} ${secs.toFixed(2)}s`;
+    fill.append(seg);
+    const item = document.createElement("span");
+    item.style.setProperty("--c", color);
+    item.textContent = `${STAGE_LABELS[name] || name} ${secs.toFixed(2)}s`;
+    legend.append(item);
+  }
+  body.append(head, bar, legend);
+  li.append(time, body);
+  list.prepend(li);
+}
 
 function meter(stream) {
   const analyser = audioCtx.createAnalyser();
@@ -286,6 +357,7 @@ async function call() {
   pc.onconnectionstatechange = () => {
     if (pc?.connectionState === "connected") {
       startedAt = performance.now();
+      latencyTotals = [];
       setStatus("live", "通话中 0:00");
       timer = setInterval(() => {
         const s = Math.floor((performance.now() - startedAt) / 1000);

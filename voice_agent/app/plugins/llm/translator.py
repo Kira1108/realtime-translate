@@ -4,6 +4,7 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 
 from app.frame import TextFrame
+from app.metrics.latency import mark
 from app.pipeline.component import PipelineComponent
 
 from .openrouter import create_pydantic_ai_model as open_router_model
@@ -54,4 +55,5 @@ class TranslatorComponent(PipelineComponent):
 
         self.logger.info(f"{tag} LLM {elapsed:.2f}s: {frame.text!r} -> {text!r}")
         if text:
+            mark(self.controller, frame.utterance_id, "llm_first")
             self.push(TextFrame(text=text, utterance_id=frame.utterance_id, origin_ts=frame.origin_ts))
