@@ -10,6 +10,13 @@ MODEL_DIR = PROJECT_PATH / "models"
 
 
 @dataclass
+class PrivateModel:
+    AccountToken:str
+    AppId: str
+    TenantId:str
+    TokenKey:str
+
+@dataclass
 class Config:
     
     PROJECT_PATH: Path = PROJECT_PATH
@@ -75,6 +82,16 @@ class Config:
     def mlx_llm_base_url(self):
         """mlx-lm server for the local LLM (bash_scripts/start_mlx_llm.sh)."""
         return self._get_env("MLX_LLM_BASE_URL") or "http://127.0.0.1:8091/v1"
+    
+    @property
+    def private_model(self):
+        return PrivateModel(
+            AccountToken=self._get_env("PRIVATE_MODEL_ACCOUNT_TOKEN"),
+            AppId=self._get_env("PRIVATE_MODEL_APP_ID"),
+            TenantId=self._get_env("PRIVATE_MODEL_TENANTID"),
+            TokenKey=self._get_env("PRIVATE_MODEL_TOKEN_KEY"),
+            URL = self._get_env("PRIVATE_MODEL_URL")
+        )
 
 
 @lru_cache(maxsize=None)
