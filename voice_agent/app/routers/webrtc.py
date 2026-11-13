@@ -1,7 +1,8 @@
 """WebRTC endpoints: a test page plus SDP offer/answer signalling, one pipeline per peer connection.
 
     GET  /webrtc                   the page (mic in, bot audio out, live two-track timeline)
-    POST /webrtc/{agent}/offer     {"sdp", "type"} -> answer; the session runs until either side hangs up
+    POST /webrtc/{agent}/offer     {"sdp", "type"} -> answer; agent is "chatbot" or "translator";
+                                   the session runs until either side hangs up
 
 The pipelines are the same as the websocket routes'; only the transport differs.
 """
@@ -16,11 +17,13 @@ from loguru import logger as _logger
 from pydantic import BaseModel
 
 from app.audio.recorder import DualChannelRecorder
+from app.audio.vad_accumulator import VADAccumulator
 from app.pipeline.pipeline import Pipeline
 from app.plugins.llm.naive_agent import NaiveAgentComponent
 from app.plugins.llm.openrouter import create_pydantic_ai_model as open_router_model
 from app.plugins.llm.local_llm import create_pydantic_ai_model as local_llm_model
-from app.plugins.stt.component import TencentSTTComponent
+from app.plugins.llm.translator import TranslatorComponent
+from app.plugins.stt.component import Qwen3STTComponent, TencentSTTComponent
 from app.plugins.tts.component import VolTTSComponent
 from app.plugins.tts.vol_tts import VolTTS
 from app.plugins.turn import BargeInAggregator
@@ -48,8 +51,19 @@ def chatbot_components():
     ]
 
 
+def translator_components():
+    """Chinese speech in, English speech out: same pipeline as /websocket/translator."""
+    return [
+        VADAccumulator(),
+        Qwen3STTComponent(),
+        TranslatorComponent(model=local_llm_model()),
+        VolTTSComponent(VolTTS()),
+    ]
+
+
 AGENTS = {
     "chatbot": chatbot_components,
+    "translator": translator_components,
 }
 
 # live sessions, so they are not garbage collected mid-call and can be closed on shutdown

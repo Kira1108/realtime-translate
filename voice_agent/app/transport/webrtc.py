@@ -168,7 +168,6 @@ class BotAudioTrack(MediaStreamTrack):
     def _next_chunk(self) -> bytes:
         need = self.samples_per_frame * 2
         out = bytearray()
-        ended = []
         while self._segments and len(out) < need:
             seg = self._segments[0]
             if seg.pos < len(seg.pcm):
@@ -182,12 +181,11 @@ class BotAudioTrack(MediaStreamTrack):
             if seg.pos >= len(seg.pcm):
                 self._segments.popleft()
                 if seg.is_end:
-                    ended.append(seg.utterance_id)
                     self._playing = None
+                    # before the next reply's on_start, so the events stay in order
+                    if self.on_end:
+                        self.on_end(seg.utterance_id)
         out += bytes(need - len(out))
-        for uid in ended:
-            if self.on_end:
-                self.on_end(uid)
         return bytes(out)
 
     async def recv(self) -> av.AudioFrame:
