@@ -44,7 +44,7 @@ def chatbot_components():
         TencentSTTComponent(),
         BargeInAggregator(),
         NaiveAgentComponent(model=local_llm_model()),
-        VolTTSComponent(VolTTS()),
+        VolTTSComponent(VolTTS(speaker="S_xWkpfbRk2")),  # cloned voice (seed-icl-2.0)
     ]
 
 

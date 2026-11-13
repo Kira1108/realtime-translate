@@ -260,6 +260,14 @@ python scripts/chatbot_mic.py --list-devices
 - 页面上是一条实时双轨时间线:上面是你,下面是助手,开口、停口、打断都标在上面。每次通话也会录到 `output/recordings/chatbot_webrtc_*.wav`。
 - 麦克风只能在 `localhost` 或 https 下用。默认不配 STUN(本机 / 局域网够用);要过公网,在 `app/routers/webrtc.py` 的 `ICE_SERVERS` 和页面里都加上。
 
+### 声音复刻页面
+
+打开 `http://localhost:8000/voice_clone`:在浏览器里照着朗读稿录一段(可暂停、继续、重录),或者上传一个音频文件,填上音色 ID 后点"开始复刻",训练完可以直接试听。
+
+- 录音在浏览器里转成 24 kHz 单声道 16-bit wav 再上传,最长 3 分钟(火山限制 10MB);建议 10–30 秒。
+- 接口:`POST /voice_clone`(multipart 表单,字段说明见 `app/routers/voice_clone.py`)、`GET /voice_clone/status`。调用逻辑在 `app/plugins/voice_clone/seed.py`,也可以命令行用:`python -m app.plugins.voice_clone.seed 样本.wav --speaker-id S_xxx`。
+- 用的是 `VOLC_TTS_API_KEY`。预付费音色填控制台里的 `S_` 编号;后付费自定义名需要在控制台另外开通。
+
 ## 测试
 
 ```bash
@@ -421,7 +429,7 @@ Pipeline(WebsocketTransport(websocket), [
 ```
 project/app/
   transport/    WebSocket 收发(ws.py,估算客户端播放进度);WebRTC 收发(webrtc.py,服务端实时播出);都发出 bot 开始 / 结束说话事件
-  static/       WebRTC 测试页面(webrtc.html)
+  static/       浏览器页面:WebRTC 通话(webrtc.html)、声音复刻(voice_clone.html)
   audio/        VAD(Silero)切句、smart-turn 说完检测(smart_turn.py)、soxr 重采样(resampler.py)、双声道录音(recorder.py)
   plugins/
     stt/        整句 STT(Qwen3)、流式 STT(腾讯:tencent_stt.py 协议 + TencentSTTComponent)
