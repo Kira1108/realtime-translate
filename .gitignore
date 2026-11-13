@@ -81,6 +81,7 @@ reports/
 # Model weights
 voice_agent/models/stt/
 voice_agent/models/tts/
+voice_agent/models/llm/
 
 # Node (if present)
 node_modules/

@@ -419,7 +419,15 @@ Pipeline(WebsocketTransport(websocket), [
 
 整句 STT 同理,参考 `qwen3_stt.py` 和 `stt/component.py`,接口换成上面的 STT 版本。
 
-**LLM:** 组件直接接收 pydantic-ai 的 `model` 和 `system_prompt`。`open_router_model(model_name=...)`(`plugins/llm/openrouter.py`)走 OpenRouter,`local_llm_model(...)`(`plugins/llm/local_llm.py`)走本地服务;不传 `model` 时默认用 `open_router_model()`。
+**LLM:** 组件直接接收 pydantic-ai 的 `model` 和 `system_prompt`。`open_router_model(model_name=...)`(`plugins/llm/openrouter.py`)走 OpenRouter,`local_llm_model(...)`(`plugins/llm/local_llm.py`)走本地服务,`mlx_llm_model()`(`plugins/llm/mlx_llm.py`)走本机 MLX 跑的 Gemma 4 E2B;不传 `model` 时默认用 `open_router_model()`。
+
+用 MLX 本地模型时,先另开一个终端启动 mlx-lm 的 OpenAI 兼容服务(模型在 `models/llm/gemma-4-e2b-it-qat-4bit`,约 4GB,复制方式见 `bash_scripts/copy_file_gemma4_e2b.sh`):
+
+```bash
+bash bash_scripts/start_mlx_llm.sh     # = python -m mlx_lm server --model models/llm/gemma-4-e2b-it-qat-4bit --port 8091
+```
+
+地址可以用 `MLX_LLM_BASE_URL` 改(默认 `http://127.0.0.1:8091/v1`)。默认关闭 Gemma 4 的思考模式,否则它会先输出一大段推理过程,被念出来。M2 Max 上首句约 0.3–0.5 秒,生成约 100 token/s。
 
 - 翻译:`TranslatorComponent(model=open_router_model(), system_prompt="...")`。
 - 对话:`NaiveAgentComponent(model=open_router_model(), system_prompt="...")`。LLM 流式输出会按句末标点切成句子,一句一句交给 TTS;句末标点后面紧跟的右引号、右括号归到前一句,只有标点没有文字的片段不会送去合成。

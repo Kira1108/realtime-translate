@@ -19,6 +19,11 @@ class Config:
         self.stt_model_dir = self.MODEL_DIR / "stt"
         self.tts_model_dir = self.MODEL_DIR / "tts"
         self.vad_model_dir = self.MODEL_DIR / "vad"
+        self.llm_model_dir = self.MODEL_DIR / "llm"
+
+    @property
+    def gemma4_e2b_model_path(self):
+        return self.llm_model_dir / "gemma-4-e2b-it-qat-4bit"
     
     @property
     def qwen3_tts_model_path(self):
@@ -65,6 +70,11 @@ class Config:
     @property
     def tencent_asr_appid(self):
         return self._get_env("TENCENT_ASR_APPID") or "1255510356"
+
+    @property
+    def mlx_llm_base_url(self):
+        """mlx-lm server for the local LLM (bash_scripts/start_mlx_llm.sh)."""
+        return self._get_env("MLX_LLM_BASE_URL") or "http://127.0.0.1:8091/v1"
 
 
 @lru_cache(maxsize=None)

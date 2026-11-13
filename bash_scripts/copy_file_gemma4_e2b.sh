@@ -1,0 +1,1 @@
+cp -RL /Users/wanghuan/.cache/huggingface/hub/models--mlx-community--gemma-4-E2B-it-qat-4bit/snapshots/42f62737af7a9fd8c1d55d79666c1a217be4e2e2/. /Users/wanghuan/Projects/realtime-translate/voice_agent/models/llm/gemma-4-e2b-it-qat-4bit/

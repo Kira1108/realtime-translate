@@ -1,8 +1,8 @@
 """WebRTC endpoints: a test page plus SDP offer/answer signalling, one pipeline per peer connection.
 
     GET  /webrtc                   the page (mic in, bot audio out, live two-track timeline)
-    POST /webrtc/{agent}/offer     {"sdp", "type"} -> answer; agent is "chatbot" or "translator";
-                                   the session runs until either side hangs up
+    POST /webrtc/{agent}/offer     {"sdp", "type"} -> answer; agent is a key of AGENTS ("chatbot",
+                                   "simple_chat", "translator"); the session runs until either side hangs up
 
 The pipelines are the same as the websocket routes'; only the transport differs.
 """
@@ -22,6 +22,7 @@ from app.pipeline.pipeline import Pipeline
 from app.plugins.llm.naive_agent import NaiveAgentComponent
 from app.plugins.llm.openrouter import create_pydantic_ai_model as open_router_model
 from app.plugins.llm.local_llm import create_pydantic_ai_model as local_llm_model
+from app.plugins.llm.mlx_llm import create_pydantic_ai_model as mlx_llm_model
 from app.plugins.llm.translator import TranslatorComponent
 from app.plugins.stt.component import Qwen3STTComponent, TencentSTTComponent
 from app.plugins.tts.component import VolTTSComponent
@@ -59,11 +60,21 @@ def translator_components():
         TranslatorComponent(model=local_llm_model()),
         VolTTSComponent(VolTTS()),
     ]
+    
+def simple_chat_components():
+    """Chat on the local MLX LLM: start it first with bash_scripts/start_mlx_llm.sh."""
+    return [
+        TencentSTTComponent(),
+        BargeInAggregator(),
+        NaiveAgentComponent(model=mlx_llm_model()),
+        VolTTSComponent(VolTTS()),
+    ]
 
 
 AGENTS = {
     "chatbot": chatbot_components,
     "translator": translator_components,
+    "simple_chat": simple_chat_components,
 }
 
 # live sessions, so they are not garbage collected mid-call and can be closed on shutdown

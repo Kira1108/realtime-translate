@@ -103,6 +103,7 @@
     <label class="mode">模式
       <select id="mode">
         <option value="chatbot">聊天</option>
+        <option value="simple_chat">本地聊天（MLX Gemma 4 E2B）</option>
         <option value="translator">实时翻译（中 → 英）</option>
       </select>
     </label>
@@ -155,6 +156,7 @@ function mark(lane, kind, label) { marks.push({ t: performance.now(), lane, kind
 
 const MODES = {
   chatbot: { title: "语音助手", subtitle: "WEBRTC · CHATBOT", bot: "助手", reply: "回答" },
+  simple_chat: { title: "本地聊天", subtitle: "WEBRTC · MLX GEMMA 4 E2B", bot: "助手", reply: "回答" },
   translator: { title: "实时翻译", subtitle: "WEBRTC · 中 → 英", bot: "译文", reply: "翻译" },
 };
 const mode = () => MODES[$("mode").value];
