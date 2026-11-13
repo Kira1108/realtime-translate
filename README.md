@@ -1,5 +1,7 @@
 # Voice Agent
 
+![Voice Agent](./samples/latency.png)
+
 实时语音服务,目前有三个接口:
 
 > 你不要以为这是抄袭pipecat或者livekit，不是的，仔细看，细节都不一样的，这是我的版本。
@@ -324,7 +326,7 @@ python -m pytest          # 轮次管理的各个场景 + 小零件,约 1 秒,�
 
 - STT、LLM 的耗时,LLM 首句的耗时(`LLM +1.99s: ...`);流式 STT 的最终结果会写明说完后多久拿到(`STT final ... after speech ended`);
 - TTS 首块耗时(`TTS first chunk`)和整句耗时、RTF;
-- 端到端延迟:从说完话到**第一块音频发出**(`first audio sent ... after speech ended`,用户实际感受到的延迟),以及到整轮回复发完(`reply finished`);
+- 端到端延迟:从说完话到**第一块音频发出**(`first audio sent ... after speech ended`,用户实际感受到的延迟),以及到整轮回复发完(`reply finished`);拆解见下面的[延迟拆解](#延迟拆解);
 - chatbot 的轮次决策,带红绿灯方便搜索:
 
 | 日志 | 意思 |
@@ -336,6 +338,41 @@ python -m pytest          # 轮次管理的各个场景 + 小零件,约 1 秒,�
 | ✋ `BARGE-IN while bot thinking / speaking` | 插话打断 |
 | `interrupting reply to #n` | 打断(插话或"闭嘴") |
 | `dropped, bot thinking / bot speaking` | bot 忙时的附和等,被丢掉 |
+| ⏱ `speech end → first audio ...` | 这一轮的延迟拆解 |
+
+### 延迟拆解
+
+每一轮都会算"**你说完 → 听到第一个字**"的总延迟,并拆到各个环节(`app/metrics/latency.py`):
+
+```
+说完 ─VAD─▶ VAD 判停 ─STT─▶ 识别结果 ─turn─▶ 交给 LLM ─LLM─▶ 首句 ─TTS─▶ 首包音频 ─out─▶ 开始播放
+```
+
+| 环节 | 含义 |
+| --- | --- |
+| VAD | 只在本地 VAD 切句时有:VAD 确认说完要等的静音(`stop_secs`,默认 0.2s) |
+| STT | 说完到拿到最终识别结果 |
+| turn | 轮次判断:smart turn,以及"没说完、再等等"的等待(1.5s 的等待会算在这里) |
+| LLM | 大模型吐出第一句(翻译是整句译文) |
+| TTS | 那一句的第一块音频 |
+| out | transport:排队、重采样、按 20ms 播出。WebRTC 是**实际开始播放**的时刻;WebSocket 是发出的时刻 |
+
+在哪里看:
+
+- **日志**,每轮一行:`[#2] ⏱ speech end → first audio 1.09s = STT 0.20 + turn 0.03 + LLM 0.51 + TTS 0.34 + out 0.01`;
+- **会话结束**时一行汇总(p50/p90):`latency over 5 turn(s), p50/p90 s: total 0.87/1.09; STT 0.18/0.20, turn 0.03/0.03, LLM 0.34/0.51, ...`;
+- **WebRTC 页面**:事件列表里每轮一条彩色分段条(统一按 3 秒满格,方便对比),右上角显示最近一轮和中位数。
+
+实测(M2 Max,`simple_chat`:腾讯流式 STT + smart turn + MLX Gemma 4 E2B + 火山 TTS,5 轮):**p50 0.87s / p90 1.09s**,其中识别约 0.18s、轮次判断 0.03s、LLM 首句约 0.34s、TTS 首包约 0.33s、播出 0.01s。
+
+**看数时注意:**
+
+- 没算进去的:麦克风采集和上行网络(说完之前)、下行网络、浏览器抖动缓冲和播放(开始播放之后)。本机 WebRTC 大约还要再加 0.1–0.2 秒。
+- **out 很大通常是在排队**:比如翻译模式,上一句译文还在播,下一句译文已经好了,只能排在后面。这是真实的等待,不是 transport 慢。
+- 每个会话第一句会包含模型加载(如本地 Qwen3 STT 第一句 STT 3 秒多),看汇总时忽略第一轮或多跑几轮。
+- 被打断、被合并到下一句、或没有回复的轮次不会出报告。
+
+要给新组件加埋点,一行:`mark(self.controller, frame.utterance_id, "llm_first")`(`from app.metrics.latency import mark`)。
 
 ## 架构
 
@@ -480,6 +517,7 @@ project/app/
     tts/        Qwen3(本机)、火山 HTTP(vol_tts)、火山双向 WebSocket(vol_tts2 + volc_protocol)
     turn/       轮次管理:半双工、"闭嘴"、smart turn、插话打断;docs/ 里有图解说明
   pipeline/     组件基类和 Pipeline
+  metrics/      每轮延迟拆解(latency.py):说完 → 听到第一个字
   control/      会话级控制总线(停止、打断、用户/bot 说话状态等事件)
   frame/        数据帧和事件定义
   routers/      WebSocket 接口

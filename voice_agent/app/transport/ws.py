@@ -6,6 +6,9 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from app.audio.recorder import DualChannelRecorder
 from app.control import SessionController
+from app.metrics.latency import logger as latency_logger
+from app.metrics.latency import mark, tracker_for
+from app.metrics.latency import report as report_latency
 from app.frame import (
     AudioFrame,
     BotStartedSpeakingFrame,
@@ -171,6 +174,9 @@ class TransportOutput(PipelineComponent):
             self._track_playback(frame)
             if frame.is_first:
                 self._notify(BotStartedSpeakingFrame(utterance_id=frame.utterance_id))
+                # sent, not played: the client's network and playback buffer come on top
+                mark(self.controller, frame.utterance_id, "first_audio")
+                report_latency(self.controller, frame.utterance_id)
                 if latency is not None:
                     self.logger.info(
                         f"{tag} first audio sent ({len(frame.audio_data) / 1024:.0f} KB), "
@@ -240,3 +246,5 @@ class WebsocketTransport:
         finally:
             if self.recorder is not None:
                 self.recorder.close()
+            if summary := tracker_for(self.session_controller).summary():
+                latency_logger.info(summary)

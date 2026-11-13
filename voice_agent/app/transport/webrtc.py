@@ -22,6 +22,9 @@ from aiortc.mediastreams import MediaStreamError
 from app.audio.recorder import DualChannelRecorder
 from app.audio.resampler import StreamResampler
 from app.control import SessionController
+from app.metrics.latency import logger as latency_logger
+from app.metrics.latency import mark, tracker_for
+from app.metrics.latency import report as report_latency
 from app.frame import (
     AudioFrame,
     BotStartedSpeakingFrame,
@@ -230,6 +233,9 @@ class WebRTCOutput(PipelineComponent):
     def _on_play_start(self, utterance_id: int | None):
         self._notify(BotStartedSpeakingFrame(utterance_id=utterance_id))
         self.events.send(BotStartedSpeakingFrame(utterance_id=utterance_id))
+        # the first audio of the reply is being played right now: what the user hears first
+        mark(self.controller, utterance_id, "first_audio")
+        report_latency(self.controller, utterance_id)
 
     def _on_play_end(self, utterance_id: int | None):
         self._notify(BotStoppedSpeakingFrame(utterance_id=utterance_id))
@@ -296,6 +302,9 @@ class WebRTCTransport:
         self.recorder = recorder
         self.input = WebRTCInput(self.session_controller, recorder=recorder)
         self.output = WebRTCOutput(self.session_controller, recorder=recorder)
+        # each turn's latency breakdown also goes to the page
+        self.latency = tracker_for(self.session_controller)
+        self.latency.listeners.append(self.output.events.send)
 
     def attach(self, pc: RTCPeerConnection):
         @pc.on("track")
@@ -331,3 +340,5 @@ class WebRTCTransport:
         finally:
             if self.recorder is not None:
                 self.recorder.close()
+            if summary := self.latency.summary():
+                latency_logger.info(summary)
