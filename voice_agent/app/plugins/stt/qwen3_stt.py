@@ -1,22 +1,22 @@
 import asyncio
-import gc
 import tempfile
-import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import mlx.core as mx
 import numpy as np
 import soundfile as sf
 from loguru import logger as _logger
 from mlx_audio.stt.utils import load
 
 from app.config import get_config
+from app.plugins.mlx_runner import shared_runner
 
 logger = _logger.bind(component="Qwen3STT")
 
 
 class Qwen3STT:
+    """Qwen3 speech recognition on MLX. The model is loaded once per process, on first use, and shared
+    by every instance (each session creates its own): see app/plugins/mlx_runner.py."""
+
     def __init__(
         self,
         model_path: str = None,
@@ -30,10 +30,13 @@ class Qwen3STT:
         # PCM 裸数据没有头，必须显式指定采样率
         self.sample_rate = sample_rate
 
-        # 延迟到工作线程加载
-        self.model = None
+        # 共享的模型和工作线程，首次推理时才加载
+        self._runner = shared_runner("STT", self.model_path, load)
         self._closed = False
-        self._executor = ThreadPoolExecutor(max_workers=1)
+
+    @property
+    def model(self):
+        return self._runner.model
 
     @property
     def model_id(self):
@@ -51,12 +54,8 @@ class Qwen3STT:
         raise ValueError(f"不支持的 PCM 格式: {dtype}")
 
     def _transcribe_sync(self, audio, sample_rate, pcm_dtype, language):
-        # 此方法仅由专用工作线程调用
-        if self.model is None:
-            logger.info("loading STT model...")
-            started = time.perf_counter()
-            self.model = load(self.model_path)
-            logger.info(f"STT model loaded in {time.perf_counter() - started:.1f}s")
+        # 此方法仅由共享的工作线程调用
+        model = self._runner.model_on_worker()
 
         tmp_path = None
         try:
@@ -84,7 +83,7 @@ class Qwen3STT:
                 # 文件路径
                 input_path = str(audio)
 
-            result = self.model.generate(input_path, language=language)
+            result = model.generate(input_path, language=language)
         finally:
             if tmp_path is not None:
                 Path(tmp_path).unlink(missing_ok=True)
@@ -117,7 +116,7 @@ class Qwen3STT:
         sample_rate = sample_rate or self.sample_rate
 
         return await asyncio.get_running_loop().run_in_executor(
-            self._executor,
+            self._runner.executor,
             self._transcribe_sync,
             audio,
             sample_rate,
@@ -125,32 +124,9 @@ class Qwen3STT:
             language,
         )
 
-    def _cleanup_sync(self):
-        # 在执行推理的同一线程中释放资源
-        mx.synchronize()
-        self.model = None
-        gc.collect()
-
-        # 不同版本 MLX 可能没有这个接口
-        clear_streams = getattr(mx, "clear_streams", None)
-        if clear_streams is not None:
-            clear_streams()
-
     async def aclose(self):
-        if self._closed:
-            return
-
+        # 模型由所有会话共享，进程结束时才释放；这里只让本实例不再接受请求
         self._closed = True
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                self._executor,
-                self._cleanup_sync,
-            )
-        finally:
-            await asyncio.to_thread(
-                self._executor.shutdown,
-                wait=True,
-            )
 
 
 async def main():

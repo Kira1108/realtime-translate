@@ -1,8 +1,5 @@
 import asyncio
-import gc
 import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import AsyncIterator
 
@@ -13,6 +10,7 @@ from loguru import logger as _logger
 from mlx_audio.tts.utils import load_model
 
 from app.config import get_config
+from app.plugins.mlx_runner import shared_runner
 
 logger = _logger.bind(component="Qwen3TTS")
 
@@ -21,6 +19,9 @@ MAX_ATTEMPTS = 3
 
 
 class Qwen3TTS:
+    """Qwen3 speech synthesis on MLX. The model is loaded once per process, on first use, and shared
+    by every instance (each session creates its own): see app/plugins/mlx_runner.py."""
+
     def __init__(
         self,
         model_path: str = None,
@@ -34,11 +35,15 @@ class Qwen3TTS:
         # 流式输出时每块音频的大致时长（秒），越小首包越快，但每块的固定开销占比越大
         self.streaming_interval = streaming_interval
 
-        # 延迟到工作线程加载
-        self.model = None
+        # 共享的模型和工作线程，首次合成时才加载
+        self._runner = shared_runner("TTS", self.model_path, load_model)
+        self._executor = self._runner.executor
         self._sample_rate = None
         self._closed = False
-        self._executor = ThreadPoolExecutor(max_workers=1)
+
+    @property
+    def model(self):
+        return self._runner.model
 
     @property
     def model_id(self):
@@ -51,12 +56,8 @@ class Qwen3TTS:
         return self._sample_rate
 
     def _ensure_model(self):
-        # 只在专用工作线程里调用
-        if self.model is None:
-            logger.info("loading TTS model...")
-            started = time.perf_counter()
-            self.model = load_model(self.model_path)
-            logger.info(f"TTS model loaded in {time.perf_counter() - started:.1f}s")
+        # 只在共享的工作线程里调用
+        return self._runner.model_on_worker()
 
     def _max_tokens(self, text):
         # 短文本模型可能不输出 EOS 一直生成到上限，按语言和文本长度估算合理时长
@@ -169,32 +170,10 @@ class Qwen3TTS:
             output_path,
         )
 
-    def _cleanup_sync(self):
-        # 在执行推理的同一线程中释放资源
-        mx.synchronize()
-        self.model = None
-        gc.collect()
-
-        # 不同版本 MLX 可能没有这个接口
-        clear_streams = getattr(mx, "clear_streams", None)
-        if clear_streams is not None:
-            clear_streams()
-
     async def aclose(self):
-        if self._closed:
-            return
-
+        # 模型由所有会话共享，进程结束时才释放；这里只让本实例不再接受请求，
+        # 正在进行的合成会在下一个 chunk 边界停下
         self._closed = True
-        try:
-            await asyncio.get_running_loop().run_in_executor(
-                self._executor,
-                self._cleanup_sync,
-            )
-        finally:
-            await asyncio.to_thread(
-                self._executor.shutdown,
-                wait=True,
-            )
 
 
 async def main():

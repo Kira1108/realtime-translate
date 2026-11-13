@@ -43,7 +43,7 @@ uvicorn app.main:app --port 8000
 
 模型文件放在 `project/models/` 下:`stt/qwen3-stt`、`tts/qwen3-tts`、`vad/silero_vad.onnx`、`turn/smart-turn.onnx`。
 
-每个会话第一次请求时才加载 STT、TTS 模型,首句会慢几秒;smart-turn 模型在第一次用到时加载。
+本机的 Qwen3 STT、TTS 模型在整个进程里只加载一次:第一次用到时加载(首句会慢几秒),之后所有会话共用,推理在各自的专用线程里排队执行(`app/plugins/mlx_runner.py`);smart-turn 模型也是第一次用到时加载。
 
 **用了代理 / VPN 的话**:腾讯语音识别会拒绝它认为是境外的请求(错误码 6001,"请检查是否开通跨境流量")。Clash 之类的工具要用**规则模式**(全局模式下规则不生效),并让 `asr.cloud.tencent.com` 直连;火山的 `openspeech.bytedance.com` 也建议直连。
 
