@@ -51,7 +51,7 @@ async def chatbot_endpoint(websocket: WebSocket):
                 TencentSTTComponent(),
                 # SmartTurnKeywordInterruptAggregator(),
                 BargeInAggregator(),
-                NaiveAgentComponent(model=local_llm_model()),
+                NaiveAgentComponent(model=open_router_model()),
                 VolTTSComponent(VolTTS()),
                 # VolTTS2Component(),
             ],
