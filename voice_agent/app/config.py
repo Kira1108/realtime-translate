@@ -15,6 +15,7 @@ class PrivateModel:
     AppId: str
     TenantId:str
     TokenKey:str
+    URL:str
 
 @dataclass
 class Config:
