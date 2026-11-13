@@ -16,7 +16,7 @@ chatbot:
 麦克风 → WebSocket → 流式 STT(自带断句,有中间结果)→ 轮次管理 → 对话 LLM → TTS 流式合成 → WebSocket → 耳机
 ```
 
-整句 STT 用 Qwen3 在本机运行(Apple Silicon,MLX),流式 STT 用腾讯云实时语音识别。TTS 可以用本机的 Qwen3,也可以用火山引擎(豆包)的云端接口。LLM 走 OpenRouter,VAD 用 Silero,"用户说完没有"用 smart-turn 模型判断。各阶段是独立的组件,用 pipeline 串起来,可以任意替换。
+整句 STT 用 Qwen3 在本机运行(Apple Silicon,MLX),流式 STT 用腾讯云实时语音识别。TTS 可以用本机的 Qwen3,也可以用火山引擎(豆包)的云端接口。LLM 走 OpenRouter,也可以用本机 MLX 跑的 Gemma 4 E2B(见[本地 LLM](#本地-llmmlx-gemma-4-e2b)),VAD 用 Silero,"用户说完没有"用 smart-turn 模型判断。各阶段是独立的组件,用 pipeline 串起来,可以任意替换。
 
 ### 🎧 听一段
 
@@ -41,7 +41,7 @@ uvicorn app.main:app --port 8000
 
 以上环境变量也可以写进 `~/.env`。
 
-模型文件放在 `project/models/` 下:`stt/qwen3-stt`、`tts/qwen3-tts`、`vad/silero_vad.onnx`、`turn/smart-turn.onnx`。
+模型文件放在 `project/models/` 下:`stt/qwen3-stt`、`tts/qwen3-tts`、`vad/silero_vad.onnx`、`turn/smart-turn.onnx`;用本地 LLM 的话还有 `llm/gemma-4-e2b-it-qat-4bit`。
 
 本机的 Qwen3 STT、TTS 模型在整个进程里只加载一次:第一次用到时加载(首句会慢几秒),之后所有会话共用,推理在各自的专用线程里排队执行(`app/plugins/mlx_runner.py`);smart-turn 模型也是第一次用到时加载。
 
@@ -268,6 +268,43 @@ python scripts/chatbot_mic.py --list-devices
 - 接口:`POST /voice_clone`(multipart 表单,字段说明见 `app/routers/voice_clone.py`)、`GET /voice_clone/status`。调用逻辑在 `app/plugins/voice_clone/seed.py`,也可以命令行用:`python -m app.plugins.voice_clone.seed 样本.wav --speaker-id S_xxx`。
 - 用的是 `VOLC_TTS_API_KEY`。预付费音色填控制台里的 `S_` 编号;后付费自定义名需要在控制台另外开通。
 
+### 本地 LLM(MLX Gemma 4 E2B)
+
+对话 LLM 可以不走云端,用本机 MLX 跑 Google 的 Gemma 4 E2B(QAT 4bit)。它跑在一个**单独的进程**里(mlx-lm 自带的 OpenAI 兼容服务),项目通过 HTTP 调用,不和应用里的 Qwen3 STT / TTS 抢同一个 MLX 线程,也可以单独重启。
+
+**1. 准备模型**(约 4GB,放在 `models/llm/gemma-4-e2b-it-qat-4bit`,已在 `.gitignore` 里):
+
+```bash
+python -c "from mlx_lm import load; load('mlx-community/gemma-4-E2B-it-qat-4bit')"   # 下载到 HF 缓存
+bash bash_scripts/copy_file_gemma4_e2b.sh                                             # 复制到 models/llm/(脚本里的快照路径按实际改)
+```
+
+**2. 启动服务**(另开一个终端,一直开着):
+
+```bash
+bash bash_scripts/start_mlx_llm.sh     # = python -m mlx_lm server --model models/llm/gemma-4-e2b-it-qat-4bit --port 8091
+```
+
+服务在收到第一个请求时才加载模型,第一句会慢几秒。
+
+**3. 在 pipeline 里用**:
+
+```python
+from app.plugins.llm.mlx_llm import create_pydantic_ai_model as mlx_llm_model
+NaiveAgentComponent(model=mlx_llm_model())
+```
+
+WebRTC 页面的"本地聊天(MLX Gemma 4 E2B)"模式(`simple_chat`)就是这样接的,也可以直接打开 `/webrtc?mode=simple_chat`。
+
+**要点:**
+
+- **思考模式默认关闭**:Gemma 4 默认会先输出一大段英文推理过程("Thinking Process ..."),会被念出来,首句也慢。`mlx_llm_model()` 通过 `chat_template_kwargs: {"enable_thinking": false}` 关掉;要打开传 `enable_thinking=True`。
+- **`model_name` 默认是 `"default_model"`**:即服务启动时 `--model` 指定的模型,不会触发重新加载。传别的路径或 repo,服务会换成那个模型。
+- **不走代理**:访问本地服务的请求忽略 `HTTP(S)_PROXY`。否则开着 Clash 又没设 `NO_PROXY` 时,服务没起会变成代理返回的 502,还要等十几秒。
+- **服务没起时马上失败**:不重试、连接超时 2 秒,bot 立刻回一句"系统出了点毛病",日志里会有 `MLX LLM server not reachable at ...: start it with bash bash_scripts/start_mlx_llm.sh`。看到这行就是忘了启动服务。
+- **地址**:默认 `http://127.0.0.1:8091/v1`,用环境变量 `MLX_LLM_BASE_URL` 改。
+- **性能**(M2 Max):峰值内存约 3.5GB,首句约 0.3–0.5 秒,生成约 100 token/s。E2B 回答简单问题够用、延迟低,但明显不如大模型聪明;要更好可以换 E4B(`mlx-community/gemma-4-E4B-it-qat-4bit`),做法相同。
+
 ## 测试
 
 ```bash
@@ -419,15 +456,7 @@ Pipeline(WebsocketTransport(websocket), [
 
 整句 STT 同理,参考 `qwen3_stt.py` 和 `stt/component.py`,接口换成上面的 STT 版本。
 
-**LLM:** 组件直接接收 pydantic-ai 的 `model` 和 `system_prompt`。`open_router_model(model_name=...)`(`plugins/llm/openrouter.py`)走 OpenRouter,`local_llm_model(...)`(`plugins/llm/local_llm.py`)走本地服务,`mlx_llm_model()`(`plugins/llm/mlx_llm.py`)走本机 MLX 跑的 Gemma 4 E2B;不传 `model` 时默认用 `open_router_model()`。
-
-用 MLX 本地模型时,先另开一个终端启动 mlx-lm 的 OpenAI 兼容服务(模型在 `models/llm/gemma-4-e2b-it-qat-4bit`,约 4GB,复制方式见 `bash_scripts/copy_file_gemma4_e2b.sh`):
-
-```bash
-bash bash_scripts/start_mlx_llm.sh     # = python -m mlx_lm server --model models/llm/gemma-4-e2b-it-qat-4bit --port 8091
-```
-
-地址可以用 `MLX_LLM_BASE_URL` 改(默认 `http://127.0.0.1:8091/v1`)。默认关闭 Gemma 4 的思考模式,否则它会先输出一大段推理过程,被念出来。M2 Max 上首句约 0.3–0.5 秒,生成约 100 token/s。
+**LLM:** 组件直接接收 pydantic-ai 的 `model` 和 `system_prompt`。`open_router_model(model_name=...)`(`plugins/llm/openrouter.py`)走 OpenRouter,`local_llm_model(...)`(`plugins/llm/local_llm.py`)走本地服务,`mlx_llm_model()`(`plugins/llm/mlx_llm.py`)走本机 MLX 跑的 Gemma 4 E2B(需要先启动服务,见[本地 LLM](#本地-llmmlx-gemma-4-e2b));不传 `model` 时默认用 `open_router_model()`。
 
 - 翻译:`TranslatorComponent(model=open_router_model(), system_prompt="...")`。
 - 对话:`NaiveAgentComponent(model=open_router_model(), system_prompt="...")`。LLM 流式输出会按句末标点切成句子,一句一句交给 TTS;句末标点后面紧跟的右引号、右括号归到前一句,只有标点没有文字的片段不会送去合成。
@@ -441,7 +470,7 @@ project/app/
   audio/        VAD(Silero)切句、smart-turn 说完检测(smart_turn.py)、soxr 重采样(resampler.py)、双声道录音(recorder.py)
   plugins/
     stt/        整句 STT(Qwen3)、流式 STT(腾讯:tencent_stt.py 协议 + TencentSTTComponent)
-    llm/        翻译(translator)、对话(naive_agent)
+    llm/        翻译(translator)、对话(naive_agent);模型:OpenRouter(openrouter)、本地服务(local_llm)、本机 MLX(mlx_llm)
     tts/        Qwen3(本机)、火山 HTTP(vol_tts)、火山双向 WebSocket(vol_tts2 + volc_protocol)
     turn/       轮次管理:半双工、"闭嘴"、smart turn、插话打断;docs/ 里有图解说明
   pipeline/     组件基类和 Pipeline
