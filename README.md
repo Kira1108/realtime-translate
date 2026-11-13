@@ -1,5 +1,7 @@
 # Voice Agent
 
+![Voice Agent](./samples/latency.png)
+
 实时语音服务,目前有三个接口:
 
 > 你不要以为这是抄袭pipecat或者livekit，不是的，仔细看，细节都不一样的，这是我的版本。
