@@ -56,6 +56,10 @@
   legend { float: left; margin-right: 4px; font: 11px var(--mono); letter-spacing: .06em; padding-top: 2px; }
   label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
   input[type="checkbox"] { accent-color: var(--ink); }
+  .mode { gap: 10px; font: 600 14px var(--sans); }
+  select { font: 500 15px var(--sans); color: var(--ink); background: #fff; border: 1px solid var(--rule); border-radius: 999px; padding: 9px 14px; cursor: pointer; }
+  select:disabled { opacity: .55; cursor: default; }
+  select:focus-visible { outline: 3px solid var(--user); outline-offset: 3px; }
 
   .log { margin-top: 28px; }
   .log h2 { font: 600 13px var(--mono); letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
@@ -79,7 +83,7 @@
 <body>
 <main>
   <header>
-    <h1>语音助手<small>WEBRTC · CHATBOT</small></h1>
+    <h1><span id="title">语音助手</span><small id="subtitle">WEBRTC · CHATBOT</small></h1>
     <div class="status" id="status" data-state="idle" role="status">未连接</div>
   </header>
 
@@ -89,13 +93,19 @@
       <canvas id="user-track" aria-hidden="true"></canvas>
     </div>
     <div class="lane" data-lane="bot">
-      <div class="lane-label"><b>助手</b><span>播放 · 右声道</span><i id="bot-state"></i></div>
+      <div class="lane-label"><b id="bot-name">助手</b><span>播放 · 右声道</span><i id="bot-state"></i></div>
       <canvas id="bot-track" aria-hidden="true"></canvas>
     </div>
     <div class="ruler"><div></div><div><span>−10s</span><span>−5s</span><span>现在</span></div></div>
   </section>
 
   <div class="controls">
+    <label class="mode">模式
+      <select id="mode">
+        <option value="chatbot">聊天</option>
+        <option value="translator">实时翻译（中 → 英）</option>
+      </select>
+    </label>
     <button id="call" type="button">开始通话</button>
     <fieldset id="mic-options">
       <legend>浏览器麦克风处理</legend>
@@ -107,7 +117,7 @@
 
   <section class="log">
     <h2>事件</h2>
-    <ol id="log"><li class="empty">开始通话后，你开口、停口，助手开始说、说完、被打断，都会记在这里，也会标在上面的时间线上。</li></ol>
+    <ol id="log"><li class="empty">开始通话后，开口、停口、开始播放、播完、打断，都会记在这里，也会标在上面的时间线上。</li></ol>
   </section>
 
   <audio id="remote" autoplay></audio>
@@ -143,13 +153,32 @@ function log(kind, text) {
 
 function mark(lane, kind, label) { marks.push({ t: performance.now(), lane, kind, label }); }
 
+const MODES = {
+  chatbot: { title: "语音助手", subtitle: "WEBRTC · CHATBOT", bot: "助手", reply: "回答" },
+  translator: { title: "实时翻译", subtitle: "WEBRTC · 中 → 英", bot: "译文", reply: "翻译" },
+};
+const mode = () => MODES[$("mode").value];
+
+function applyMode() {
+  const m = mode();
+  $("title").textContent = m.title;
+  $("subtitle").textContent = m.subtitle;
+  $("bot-name").textContent = m.bot;
+  document.title = `${m.title} · WebRTC`;
+  localStorage.setItem("webrtc:mode", $("mode").value);
+}
+$("mode").value = new URLSearchParams(location.search).get("mode") || localStorage.getItem("webrtc:mode") || "chatbot";
+if (!MODES[$("mode").value]) $("mode").value = "chatbot";
+$("mode").onchange = applyMode;
+applyMode();
+
 const EVENTS = {
   user_started_speaking: (e) => { laneState("user", "说话中"); mark("user", "start"); log("user", `你开口了 #${e.utterance_id}`); },
-  user_stopped_speaking: (e) => { laneState("user", ""); mark("user", "stop"); log("user", `你停口了 #${e.utterance_id}`); },
-  bot_started_speaking: (e) => { laneState("bot", "说话中"); mark("bot", "start"); log("bot", `助手开始说，回答 #${e.utterance_id}`); },
+  user_stopped_speaking: (e) => { laneState("user", ""); mark("user", "stop"); log("user", e.utterance_id == null ? "你停口了（太短，没当成一句话）" : `你停口了 #${e.utterance_id}`); },
+  bot_started_speaking: (e) => { laneState("bot", "说话中"); mark("bot", "start"); log("bot", `${mode().bot}开始播放，${mode().reply} #${e.utterance_id}`); },
   bot_stopped_speaking: () => { laneState("bot", ""); mark("bot", "stop"); },
-  reply_end: (e) => log("bot", `助手说完了，回答 #${e.utterance_id}`),
-  interrupt: (e) => { laneState("bot", ""); mark("both", "interrupt", "打断"); log("interrupt", `打断了助手对 #${e.utterance_id} 的回答`); },
+  reply_end: (e) => log("bot", `${mode().bot}播完了，${mode().reply} #${e.utterance_id}`),
+  interrupt: (e) => { laneState("bot", ""); mark("both", "interrupt", "打断"); log("interrupt", `打断了对 #${e.utterance_id} 的${mode().reply}`); },
   stop: () => { log("bot", "服务端结束了通话"); hangUp(false); },
 };
 
@@ -224,6 +253,7 @@ async function call() {
   const button = $("call");
   button.disabled = true;
   setStatus("connecting", "连接中…");
+  $("mode").disabled = true;
   try {
     micStream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -237,6 +267,7 @@ async function call() {
     setStatus("error", "没有麦克风权限");
     log("error", `拿不到麦克风（${err.name}）：在地址栏左侧允许使用麦克风，再点开始通话。页面需要用 localhost 或 https 打开。`);
     button.disabled = false;
+    $("mode").disabled = false;
     return;
   }
 
@@ -275,7 +306,7 @@ async function call() {
   try {
     await pc.setLocalDescription(await pc.createOffer());
     await waitForIce(pc);
-    const res = await fetch(`${location.pathname.replace(/\/$/, "")}/chatbot/offer`, {
+    const res = await fetch(`${location.pathname.replace(/\/$/, "")}/${$("mode").value}/offer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
@@ -293,6 +324,7 @@ async function call() {
   button.dataset.live = "true";
   button.disabled = false;
   $("mic-options").disabled = true;
+  $("mode").disabled = true;
 }
 
 function hangUp(tellServer = true) {
@@ -310,6 +342,7 @@ function hangUp(tellServer = true) {
   button.dataset.live = "false";
   button.disabled = false;
   $("mic-options").disabled = false;
+  $("mode").disabled = false;
 }
 
 $("call").addEventListener("click", () => (pc ? hangUp() : call()));
