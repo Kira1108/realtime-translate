@@ -1,12 +1,13 @@
 import time
 from typing import AsyncGenerator
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 
 from app.frame import InterruptFrame, StopFrame, TextFrame, TextStreamFrame
 from app.pipeline.component import PipelineComponent
 
-from .openrouter import create_pydantic_ai_model
-# from .local_llm import create_pydantic_ai_model
+from .openrouter import create_pydantic_ai_model as open_router_model
+from .local_llm import create_pydantic_ai_model as local_llm_model
 
 SYSTEM_PROMPT = (
     "You are Vivian, a smart AI assistant. "
@@ -34,8 +35,11 @@ def split_sentences(buffer: str) -> tuple[str, str]:
 
 
 class NaiveAgentRunner:
-    def __init__(self, model_name: str | None = None, system_prompt: str = SYSTEM_PROMPT):
-        model = create_pydantic_ai_model(model_name) if model_name else create_pydantic_ai_model()
+    def __init__(self,
+            model:Model = None, 
+            system_prompt: str = SYSTEM_PROMPT):
+        
+        model = model if model else open_router_model()
         self.agent = Agent(model=model, system_prompt=system_prompt)
         self.message_history = None
 
@@ -50,13 +54,23 @@ class NaiveAgentRunner:
         self.message_history = None
 
 class NaiveAgentComponent(PipelineComponent):
-    """Handles each incoming TextFrame using the NaiveAgent."""
+    """Handles each incoming TextFrame using the NaiveAgent.
+
+    Pass `model` / `system_prompt` to configure the agent; `runner` replaces it entirely (e.g. a fake in tests).
+    """
 
     control_frames = (StopFrame, InterruptFrame)
 
-    def __init__(self, runner: NaiveAgentRunner | None = None, controller=None, downstream=None):
+    def __init__(self,
+            model: Model | None = None,
+            system_prompt: str = SYSTEM_PROMPT,
+            *,
+            runner: NaiveAgentRunner | None = None,
+            controller=None,
+            downstream=None,
+        ):
         super().__init__(controller, downstream)
-        self.runner = runner or NaiveAgentRunner()
+        self.runner = runner or NaiveAgentRunner(model=model, system_prompt=system_prompt)
 
     def _push_text(self, 
             text: str, 

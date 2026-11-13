@@ -11,6 +11,8 @@ from app.plugins.tts.vol_tts import VolTTS
 from app.plugins.tts.component import VolTTSComponent,VolTTS2Component
 from app.transport.ws import WebsocketTransport
 from app.plugins.llm.naive_agent import NaiveAgentComponent
+from app.plugins.llm.openrouter import create_pydantic_ai_model as open_router_model
+from app.plugins.llm.local_llm import create_pydantic_ai_model as local_llm_model
 from app.plugins.turn import KeywordInterruptAggregator
 from app.plugins.turn import SmartTurnKeywordInterruptAggregator
 from app.plugins.turn import BargeInAggregator
@@ -36,7 +38,7 @@ async def chatbot_endpoint(websocket: WebSocket):
     #         # SmartTurnKeywordInterruptAggregator(),
         
     #         BargeInAggregator(),
-    #         NaiveAgentComponent(),
+    #         NaiveAgentComponent(model=open_router_model()),
     #         VolTTSComponent(VolTTS()),
     #         # VolTTS2Component(),
     #     ],
@@ -49,7 +51,7 @@ async def chatbot_endpoint(websocket: WebSocket):
                 TencentSTTComponent(),
                 # SmartTurnKeywordInterruptAggregator(),
                 BargeInAggregator(),
-                NaiveAgentComponent(),
+                NaiveAgentComponent(model=local_llm_model()),
                 VolTTSComponent(VolTTS()),
                 # VolTTS2Component(),
             ],

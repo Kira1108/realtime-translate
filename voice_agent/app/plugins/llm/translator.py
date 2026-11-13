@@ -1,11 +1,12 @@
 import time
 
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 
 from app.frame import TextFrame
 from app.pipeline.component import PipelineComponent
 
-from .openrouter import create_pydantic_ai_model
+from .openrouter import create_pydantic_ai_model as open_router_model
 
 SYSTEM_PROMPT = (
     "Translate the user's Chinese text into natural, concise English. "
@@ -14,8 +15,8 @@ SYSTEM_PROMPT = (
 
 
 class Translator:
-    def __init__(self, model_name: str | None = None, system_prompt: str = SYSTEM_PROMPT):
-        model = create_pydantic_ai_model(model_name) if model_name else create_pydantic_ai_model()
+    def __init__(self, model: Model | None = None, system_prompt: str = SYSTEM_PROMPT):
+        model = model if model else open_router_model()
         self.agent = Agent(model=model, system_prompt=system_prompt)
 
     async def translate(self, text: str) -> str:
@@ -24,11 +25,21 @@ class Translator:
 
 
 class TranslatorComponent(PipelineComponent):
-    """Translates each incoming Chinese TextFrame into an English TextFrame."""
+    """Translates each incoming Chinese TextFrame into an English TextFrame.
 
-    def __init__(self, translator: Translator | None = None, controller=None, downstream=None):
+    Pass `model` / `system_prompt` to configure the agent; `translator` replaces it entirely (e.g. a fake in tests).
+    """
+
+    def __init__(self,
+            model: Model | None = None,
+            system_prompt: str = SYSTEM_PROMPT,
+            *,
+            translator: Translator | None = None,
+            controller=None,
+            downstream=None,
+        ):
         super().__init__(controller, downstream)
-        self.translator = translator or Translator()
+        self.translator = translator or Translator(model=model, system_prompt=system_prompt)
 
     async def handle(self, frame):
         if not isinstance(frame, TextFrame) or not frame.text.strip():

@@ -398,7 +398,7 @@ class MyTTS:
 Pipeline(WebsocketTransport(websocket), [
     TencentSTTComponent(),          # 或 VADAccumulator() + Qwen3STTComponent(MySTT())
     BargeInAggregator(),            # 或其他轮次管理
-    NaiveAgentComponent(),
+    NaiveAgentComponent(model=open_router_model()),
     Qwen3TTSComponent(MyTTS()),
 ])
 ```
@@ -411,10 +411,10 @@ Pipeline(WebsocketTransport(websocket), [
 
 整句 STT 同理,参考 `qwen3_stt.py` 和 `stt/component.py`,接口换成上面的 STT 版本。
 
-**LLM:**
+**LLM:** 组件直接接收 pydantic-ai 的 `model` 和 `system_prompt`。`open_router_model(model_name=...)`(`plugins/llm/openrouter.py`)走 OpenRouter,`local_llm_model(...)`(`plugins/llm/local_llm.py`)走本地服务;不传 `model` 时默认用 `open_router_model()`。
 
-- 翻译:`TranslatorComponent(Translator(model_name="...", system_prompt="..."))`。
-- 对话:`NaiveAgentComponent(NaiveAgentRunner(model_name="...", system_prompt="..."))`。LLM 流式输出会按句末标点切成句子,一句一句交给 TTS;句末标点后面紧跟的右引号、右括号归到前一句,只有标点没有文字的片段不会送去合成。
+- 翻译:`TranslatorComponent(model=open_router_model(), system_prompt="...")`。
+- 对话:`NaiveAgentComponent(model=open_router_model(), system_prompt="...")`。LLM 流式输出会按句末标点切成句子,一句一句交给 TTS;句末标点后面紧跟的右引号、右括号归到前一句,只有标点没有文字的片段不会送去合成。
 
 ## 项目结构
 

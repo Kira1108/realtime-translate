@@ -18,6 +18,8 @@ from pydantic import BaseModel
 from app.audio.recorder import DualChannelRecorder
 from app.pipeline.pipeline import Pipeline
 from app.plugins.llm.naive_agent import NaiveAgentComponent
+from app.plugins.llm.openrouter import create_pydantic_ai_model as open_router_model
+from app.plugins.llm.local_llm import create_pydantic_ai_model as local_llm_model
 from app.plugins.stt.component import TencentSTTComponent
 from app.plugins.tts.component import VolTTSComponent
 from app.plugins.tts.vol_tts import VolTTS
@@ -41,7 +43,7 @@ def chatbot_components():
     return [
         TencentSTTComponent(),
         BargeInAggregator(),
-        NaiveAgentComponent(),
+        NaiveAgentComponent(model=local_llm_model()),
         VolTTSComponent(VolTTS()),
     ]
 
