@@ -71,8 +71,24 @@ def simple_chat_components():
     ]
 
 
+def dual_agent_components():
+    """Fast responder / slow thinker (app/plugins/llm/dual_agent.py): small model answers, the 31B plans in the background."""
+    from app.plugins.llm.dual_agent import DualAgentComponent, FastResponderRunner, SlowThinkerRunner
+
+    return [
+        TencentSTTComponent(),
+        BargeInAggregator(),
+        DualAgentComponent(
+            responder=FastResponderRunner(local_llm_model()),  # gemma 4 31B for now; swap in a smaller model later
+            thinker=SlowThinkerRunner(local_llm_model()),  # same 31B as the chatbot option, for comparison
+        ),
+        VolTTSComponent(VolTTS(speaker="S_xWkpfbRk2")),  # same voice as the chatbot option
+    ]
+
+
 AGENTS = {
     "chatbot": chatbot_components,
+    "dual_agent": dual_agent_components,
     "translator": translator_components,
     "simple_chat": simple_chat_components,
 }

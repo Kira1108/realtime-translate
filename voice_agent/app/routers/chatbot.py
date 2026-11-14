@@ -63,3 +63,34 @@ async def chatbot_endpoint(websocket: WebSocket):
             await websocket.close()
         except RuntimeError:
             pass  # already closed by the client
+
+
+# fast responder / slow thinker (app/plugins/llm/dual_agent.py): same protocol as /chatbot, for A/B comparison
+DUAL_RESPONDER_MODEL = "google/gemma-4-31b-it"       # answers every turn; swap in a smaller, faster model later
+DUAL_THINKER_MODEL = "google/gemma-4-31b-it"           # big: plans in the background
+
+
+@router.websocket("/dual_agent")
+async def dual_agent_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    from app.plugins.llm.dual_agent import DualAgentComponent, FastResponderRunner, SlowThinkerRunner
+
+    pipeline = Pipeline(
+        WebsocketTransport(websocket, recorder=DualChannelRecorder.for_session("dual_agent")),
+        [
+            TencentSTTComponent(),
+            BargeInAggregator(),
+            DualAgentComponent(
+                responder=FastResponderRunner(open_router_model(DUAL_RESPONDER_MODEL)),
+                thinker=SlowThinkerRunner(open_router_model(DUAL_THINKER_MODEL)),
+            ),
+            VolTTSComponent(VolTTS()),
+        ],
+    )
+    try:
+        await pipeline.run()
+    finally:
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass  # already closed by the client
